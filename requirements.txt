@@ -1,4 +1,1 @@
-streamlit>=1.35
-pandas>=2.0
-numpy>=1.26
-openpyxl>=3.1
+streamlit>=1.35\npandas>=2.0\nnumpy>=1.26\nopenpyxl>=3.1\n

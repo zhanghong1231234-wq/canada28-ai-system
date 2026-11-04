@@ -5,10 +5,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Canada28 Matrix AI V4.0", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Canada28 Matrix AI V4.1", page_icon="📊", layout="wide")
 
-st.title("Canada28 Matrix AI V4.0")
-st.caption("真实历史数据分析、概率矩阵与时间顺序回测。统计结果不保证预测未来开奖结果。")
+st.title("Canada28 Matrix AI V4.1")
+st.caption("真实历史数据分析、动态窗口矩阵、极值统计与时间顺序回测。统计结果不保证预测未来开奖结果。")
 
 COL_ALIASES = {
     "期号": ["期号", "期数", "开奖期号", "draw_id", "issue", "period"],
@@ -93,7 +93,7 @@ def evaluate_walk_forward(sums, window=100, strength=100.0):
 
 upload = st.sidebar.file_uploader("上传真实历史开奖数据（Excel / CSV）", type=["xlsx", "xls", "csv"])
 st.sidebar.markdown("数据至少包含 A、B、C 三列；也支持「号码1、号码2、号码3」。")
-window = st.sidebar.select_slider("近期统计窗口", options=[50, 100, 200, 300, 500], value=100)
+window = st.sidebar.select_slider("平滑参考窗口", options=[20, 50, 100, 200, 300, 500], value=100)
 strength = st.sidebar.slider("近期频率平滑强度", min_value=10, max_value=500, value=100, step=10)
 mc_runs = st.sidebar.selectbox("蒙特卡洛模拟次数", [100_000, 500_000, 1_000_000], index=2)
 
@@ -164,7 +164,38 @@ with c2:
     category["频率(%)"] = category["次数"] / len(data) * 100
     st.dataframe(category, use_container_width=True, hide_index=True)
 
-st.subheader("4. 时间顺序模型回测")
+st.subheader("4. 近期动态统计（20 / 50 / 100 期）")
+window_rows = []
+for n in [20, 50, 100]:
+    part = data.tail(min(n, len(data)))
+    sums_part = part["和值"]
+    window_rows.append({
+        "统计窗口": f"最近{len(part)}期",
+        "平均和值": float(sums_part.mean()),
+        "最大和值": int(sums_part.max()),
+        "最小和值": int(sums_part.min()),
+        "大(14–27)%": float((sums_part >= 14).mean() * 100),
+        "小(0–13)%": float((sums_part <= 13).mean() * 100),
+        "单数%": float((sums_part % 2 == 1).mean() * 100),
+        "双数%": float((sums_part % 2 == 0).mean() * 100),
+    })
+window_stats = pd.DataFrame(window_rows)
+st.dataframe(window_stats.style.format({c: "{:.2f}" for c in window_stats.columns if c not in ["统计窗口"]}),
+             use_container_width=True, hide_index=True)
+
+extreme_counts = pd.DataFrame({
+    "区间": ["极小和值(0–6)", "中间和值(7–20)", "极大和值(21–27)"],
+    "次数": [
+        int(data["和值"].between(0, 6).sum()),
+        int(data["和值"].between(7, 20).sum()),
+        int(data["和值"].between(21, 27).sum())
+    ]
+})
+extreme_counts["频率(%)"] = extreme_counts["次数"] / len(data) * 100
+st.subheader("5. 极值与区间统计")
+st.dataframe(extreme_counts, use_container_width=True, hide_index=True)
+
+st.subheader("6. 时间顺序模型回测")
 backtest = evaluate_walk_forward(data["和值"].to_numpy(), window, strength)
 if backtest is None:
     st.warning("至少需要 10 期以上数据，才能进行有意义的时间顺序回测。")
@@ -179,7 +210,7 @@ else:
     st.dataframe(result.style.format({"Log Loss（越低越好）": "{:.5f}", "Brier Score（越低越好）": "{:.5f}"}),
                  use_container_width=True, hide_index=True)
 
-st.subheader("5. 下一期概率参考（非确定性预测）")
+st.subheader("7. 下一期概率参考（非确定性预测）")
 st.caption("公平且独立的三位 0–9 数字模型下，理论和值概率不因历史冷热变化。近期平滑概率仅作为样本描述对照。")
 next_table = matrix[["和值", "理论概率(%)", "历史频率(%)", "平滑近期参考概率(%)"]].copy()
 next_table["理论概率排名"] = next_table["理论概率(%)"].rank(method="min", ascending=False).astype(int)
@@ -193,7 +224,7 @@ rng = np.random.default_rng(2026)
 mc = rng.integers(0, 10, size=(mc_runs, 3)).sum(axis=1)
 mc_prob = np.bincount(mc, minlength=28) / mc_runs
 mc_df = pd.DataFrame({"和值": SUMS, "理论概率(%)": THEORY * 100, "蒙特卡洛概率(%)": mc_prob * 100})
-with st.expander("6. 蒙特卡洛理论分布验证"):
+with st.expander("8. 蒙特卡洛理论分布验证"):
     st.write(f"模拟次数：{mc_runs:,}")
     st.line_chart(mc_df.set_index("和值"), use_container_width=True)
 
@@ -204,11 +235,13 @@ with pd.ExcelWriter(output, engine="openpyxl") as writer:
     matrix.to_excel(writer, sheet_name="和值概率矩阵", index=False)
     digit_matrix.to_excel(writer, sheet_name="数字矩阵", index=False)
     category.to_excel(writer, sheet_name="大小单双", index=False)
+    window_stats.to_excel(writer, sheet_name="近期动态统计", index=False)
+    extreme_counts.to_excel(writer, sheet_name="极值区间统计", index=False)
     if backtest is not None:
         result.to_excel(writer, sheet_name="模型回测", index=False)
     mc_df.to_excel(writer, sheet_name="蒙特卡洛", index=False)
-st.download_button("下载 V4.0 分析报告 Excel", output.getvalue(),
-                   "Canada28_Matrix_AI_V4_Report.xlsx",
+st.download_button("下载 V4.1 分析报告 Excel", output.getvalue(),
+                   "Canada28_Matrix_AI_V4_1_Report.xlsx",
                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("免责声明：本工具用于历史数据统计、概率教学和模型评估。随机开奖通常无法由历史数据可靠预测；排名不代表下一期更可能中奖，也不构成投注建议。")

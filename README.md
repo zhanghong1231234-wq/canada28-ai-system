@@ -1,20 +1,23 @@
-# Canada28 Matrix AI V4.0
+# Canada28 Matrix AI V4.1
 
-## 本地运行
-```bash
-python -m pip install -r requirements.txt
-streamlit run app.py
-```
-
-## Streamlit Community Cloud 部署
-1. 将 `app.py`、`requirements.txt`、`README.md` 放在 GitHub 仓库根目录。
-2. 在 Streamlit Community Cloud 选择仓库 `zhanghong1231234-wq/canada28-ai-system`、分支 `main`、主文件 `app.py`。
-3. 部署成功后打开网页，在左侧上传历史开奖 Excel/CSV。
+## 功能
+- 上传 Excel / CSV 真实历史开奖数据
+- 和值 0–27 理论概率、历史频率、平滑近期参考概率矩阵
+- A/B/C 数字分布矩阵
+- 大小、单双统计
+- 最近 20 / 50 / 100 期动态统计
+- 极小、中间、极大和值区间统计
+- 时间顺序 walk-forward 回测（Log Loss、Brier Score）
+- 蒙特卡洛理论分布验证
+- 导出包含各统计表的 Excel 报告
 
 ## 数据格式
-必须包含三列号码：`A`、`B`、`C`（每列为 0–9 整数）。
-也支持 `号码1`、`号码2`、`号码3`。`期号`可选；建议按时间从旧到新排列。
-系统自动计算和值、大小、单双，并生成 0–27 概率矩阵、近期频率、时间顺序回测和 Excel 报告。
+列名支持：`期号, 号码1, 号码2, 号码3` 或 `期号, A, B, C`。
+每期三个号码必须是 0–9 的整数。建议按旧到新排序。
+
+## 部署
+将 `app.py`、`requirements.txt`、`README.md` 上传到 GitHub 仓库根目录，分支 `main`。
+Streamlit Cloud 的 Main file path 填 `app.py`。
 
 ## 重要说明
-系统输出的是历史统计和概率参考，不是确定性预测。若开奖独立且公平，历史走势不能可靠决定下一期结果。
+该程序是历史统计与概率教学工具。若开奖公平且独立，历史冷热不会改变下一期理论概率；模型回测仅用于评估样本内外的概率表现，不保证预测未来结果，也不构成投注建议。
