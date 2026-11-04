@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V4.0 — historical analysis and probability backtesting."""
+"""Canada28 Matrix AI V4.2 — historical analysis and walk-forward backtesting."""
 import io
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Canada28 Matrix AI V4.1", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Canada28 Matrix AI V4.2", page_icon="📊", layout="wide")
 
-st.title("Canada28 Matrix AI V4.1")
-st.caption("真实历史数据分析、动态窗口矩阵、极值统计与时间顺序回测。统计结果不保证预测未来开奖结果。")
+st.title("Canada28 Matrix AI V4.2")
+st.caption("真实历史数据分析、动态窗口矩阵、极值统计、逐期命中回测。统计结果不保证预测未来开奖结果。")
 
 COL_ALIASES = {
     "期号": ["期号", "期数", "开奖期号", "draw_id", "issue", "period"],
@@ -73,23 +73,45 @@ def smoothed_recent_probability(history_sums, window=100, strength=100.0):
     # Bayesian-style shrinkage toward the exact three-digit theoretical distribution.
     return (counts + strength * THEORY) / (len(recent) + strength)
 
-def evaluate_walk_forward(sums, window=100, strength=100.0):
-    # First 80% is the initial training segment; remaining rows are predicted sequentially.
+def evaluate_walk_forward(sums, issues, window=100, strength=100.0):
+    """Sequentially test the final 20% without using future observations."""
+    sums = np.asarray(sums, dtype=int)
+    issues = np.asarray(issues, dtype=str)
     split = max(1, int(len(sums) * 0.8))
     if len(sums) - split < 1:
         return None
-    actual = np.asarray(sums[split:], dtype=int)
+
+    actual = sums[split:]
     p_theory, p_recent = [], []
+    rows = []
     for idx in range(split, len(sums)):
-        hist = np.asarray(sums[:idx], dtype=int)
+        # Only rows strictly before idx are used to form this period's forecast.
+        hist = sums[:idx]
+        recent_probability = smoothed_recent_probability(hist, window, strength)
         p_theory.append(THEORY.copy())
-        p_recent.append(smoothed_recent_probability(hist, window, strength))
+        p_recent.append(recent_probability)
+        predicted = int(np.argmax(recent_probability))
+        observed = int(sums[idx])
+        rows.append({
+            "期号": issues[idx],
+            "预测前已知历史期数": idx,
+            "预测和值（单一）": predicted,
+            "实际和值": observed,
+            "是否命中": "命中" if predicted == observed else "未命中",
+            "和值差": abs(predicted - observed),
+        })
+
     def scores(probabilities):
         p = np.clip(np.asarray(probabilities), 1e-15, 1.0)
         chosen = p[np.arange(len(actual)), actual]
         onehot = np.eye(28)[actual]
         return float(-np.mean(np.log(chosen))), float(np.mean(np.sum((p-onehot)**2, axis=1)))
-    return split, len(actual), scores(p_theory), scores(p_recent)
+
+    detail = pd.DataFrame(rows)
+    hits = int((detail["是否命中"] == "命中").sum())
+    test_n = len(detail)
+    hit_rate = hits / test_n * 100 if test_n else 0.0
+    return split, test_n, scores(p_theory), scores(p_recent), detail, hits, hit_rate
 
 upload = st.sidebar.file_uploader("上传真实历史开奖数据（Excel / CSV）", type=["xlsx", "xls", "csv"])
 st.sidebar.markdown("数据至少包含 A、B、C 三列；也支持「号码1、号码2、号码3」。")
@@ -195,20 +217,30 @@ extreme_counts["频率(%)"] = extreme_counts["次数"] / len(data) * 100
 st.subheader("5. 极值与区间统计")
 st.dataframe(extreme_counts, use_container_width=True, hide_index=True)
 
-st.subheader("6. 时间顺序模型回测")
-backtest = evaluate_walk_forward(data["和值"].to_numpy(), window, strength)
+st.subheader("6. 时间顺序模型回测（单一和值完全命中）")
+backtest = evaluate_walk_forward(data["和值"].to_numpy(), data["期号"].to_numpy(), window, strength)
+backtest_detail = pd.DataFrame()
 if backtest is None:
-    st.warning("至少需要 10 期以上数据，才能进行有意义的时间顺序回测。")
+    st.warning("有效记录不足，无法进行时间顺序回测。")
 else:
-    split, test_n, base, recent_score = backtest
+    split, test_n, base, recent_score, backtest_detail, hits, hit_rate = backtest
+    st.write(f"按时间顺序：前 {split} 期作为初始历史，后 {test_n} 期逐期测试；每一期只使用该期开奖前的数据。")
+    st.caption("单一和值预测：取平滑近期概率最高的一个和值；预测和值与实际和值完全相同才计为命中。若最高概率并列，取较小和值。")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("完全命中", f"{hits} / {test_n}")
+    k2.metric("回测命中率", f"{hit_rate:.2f}%")
+    k3.metric("未命中", f"{test_n - hits}")
+    st.markdown("**逐期预测明细**")
+    st.dataframe(backtest_detail, use_container_width=True, hide_index=True)
     result = pd.DataFrame({
         "模型": ["理论概率基准", f"近{window}期频率（向理论概率平滑）"],
         "Log Loss（越低越好）": [base[0], recent_score[0]],
         "Brier Score（越低越好）": [base[1], recent_score[1]],
     })
-    st.write(f"按时间顺序：前 {split} 期作为初始历史，后 {test_n} 期逐期回测。")
+    st.markdown("**概率评分对比**")
     st.dataframe(result.style.format({"Log Loss（越低越好）": "{:.5f}", "Brier Score（越低越好）": "{:.5f}"}),
                  use_container_width=True, hide_index=True)
+    st.caption("注意：命中率只描述本次测试样本，不代表下一期命中概率。样本量较小时，命中率波动尤其大。")
 
 st.subheader("7. 下一期概率参考（非确定性预测）")
 st.caption("公平且独立的三位 0–9 数字模型下，理论和值概率不因历史冷热变化。近期平滑概率仅作为样本描述对照。")
@@ -238,10 +270,11 @@ with pd.ExcelWriter(output, engine="openpyxl") as writer:
     window_stats.to_excel(writer, sheet_name="近期动态统计", index=False)
     extreme_counts.to_excel(writer, sheet_name="极值区间统计", index=False)
     if backtest is not None:
-        result.to_excel(writer, sheet_name="模型回测", index=False)
+        result.to_excel(writer, sheet_name="概率评分", index=False)
+        backtest_detail.to_excel(writer, sheet_name="逐期回测明细", index=False)
     mc_df.to_excel(writer, sheet_name="蒙特卡洛", index=False)
-st.download_button("下载 V4.1 分析报告 Excel", output.getvalue(),
-                   "Canada28_Matrix_AI_V4_1_Report.xlsx",
+st.download_button("下载 V4.2 分析报告 Excel", output.getvalue(),
+                   "Canada28_Matrix_AI_V4_2_Report.xlsx",
                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.caption("免责声明：本工具用于历史数据统计、概率教学和模型评估。随机开奖通常无法由历史数据可靠预测；排名不代表下一期更可能中奖，也不构成投注建议。")
