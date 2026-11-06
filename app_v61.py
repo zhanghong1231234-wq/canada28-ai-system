@@ -1224,9 +1224,9 @@ for position, column in zip(("A", "B", "C"), seven_columns):
         st.markdown(f"### `{saved}`")
         st.caption("本期已锁定的七码（首次预测，按当时概率排序）")
         with st.expander("查看0–9完整概率"):
-            probs = info["probs"]
+            digit_probs = info["probs"]
             st.dataframe(pd.DataFrame({"数字": list(range(10)),
-                                       "估计概率": [f"{v * 100:.2f}%" for v in probs]}),
+                                       "估计概率": [f"{v * 100:.2f}%" for v in digit_probs]}),
                          hide_index=True, use_container_width=True)
 st.caption("公平独立开奖下，单球选7个不同数字的理论覆盖率为70%。统计排序不能证明未来命中率超过70%。")
 with st.expander("V6.1 三球七码事前预测记录与开奖核对", expanded=False):
