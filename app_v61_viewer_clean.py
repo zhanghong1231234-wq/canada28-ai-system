@@ -185,7 +185,20 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
-
+st.markdown("""
+<style>
+/* 隐藏 Streamlit 顶部工具栏 */
+[data-testid="stToolbar"],
+[data-testid="stMainMenu"],
+[data-testid="stAppDeployButton"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+#MainMenu,
+header[data-testid="stHeader"] {
+    display: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 st.title("Canada28 Matrix AI V6.1 · 三算法七码预测")
 # Visitor-facing cosmetic cleanup. This is not an authorization boundary.
 st.markdown("""<style>
