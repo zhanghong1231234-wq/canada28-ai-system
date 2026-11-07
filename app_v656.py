@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V6.5.4.1
+"""Canada28 Matrix AI V6.5.6
 历史统计与大小/单双概率研究工具。非投注软件，不保证预测准确。
 """
 import os
@@ -183,7 +183,7 @@ def parse_beijing_time(value):
         return None
 
 st.set_page_config(
-    page_title="Canada28 Matrix AI V6.5.4.1",
+    page_title="Canada28 Matrix AI V6.5.6",
     page_icon="📊",
     layout="wide",
 )
@@ -193,7 +193,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.title("🔐 Canada28 Matrix AI V6.5.4.1")
+    st.title("🔐 Canada28 Matrix AI V6.5.6")
     st.subheader("请输入登录密码")
 
     password = st.text_input(
@@ -217,7 +217,7 @@ def check_password():
 
 if not check_password():
     st.stop()
-st.title("Canada28 Matrix AI V6.5.4.1")
+st.title("Canada28 Matrix AI V6.5.6")
 st.caption(
     "历史数据驱动的大小 / 单双概率研究。数据来自 pc28.world；"
     "统计概率不代表能够预测随机开奖结果，也不构成投注建议。"
@@ -826,33 +826,56 @@ def _digit_model_distributions(values, half_life=500):
 
 
 def seven_digit_probabilities(history, position, half_life=500):
-    """Fit weights using strictly earlier outcomes; never use target result."""
+    """Causal 7-of-10 model selection with independent confirmation.
+
+    Selection and confirmation are both prequential (no target leakage).
+    The historical split is a screening heuristic, not proof of future advantage.
+    """
     values = pd.to_numeric(history[position], errors="coerce").dropna().astype(int).to_numpy()
     values = values[(values >= 0) & (values <= 9)]
     names = ("全历史", "近500期", "近100期", "时间衰减", "状态转移")
-    scores = {name: [] for name in names}
-    # Last 100 outcomes are scored only with predictions computed BEFORE each outcome.
-    # Every fifth target keeps page refreshes lightweight.
-    first = max(100, len(values) - 100)
-    for i in range(first, len(values), 5):
-        earlier = _digit_model_distributions(values[:i], half_life)
-        actual = int(values[i])
-        for name in names:
-            # Multiclass Brier: sum((p_k - onehot_k)^2).
-            prob = earlier[name]
-            scores[name].append(float(np.sum(prob ** 2) - 2 * prob[actual] + 1))
-    means = {name: float(np.mean(scores[name])) if scores[name] else .9 for name in names}
-    # Strong regularization: limited evidence cannot create extreme model weights.
-    raw = np.array([np.exp(np.clip((.9 - means[name]) * 3, -.15, .15)) for name in names])
-    learned = raw / raw.sum()
-    weights = .75 / len(names) + .25 * learned
+    n = len(values)
     models = _digit_model_distributions(values, half_life)
-    estimate = sum(weights[j] * models[name] for j, name in enumerate(names))
-    # 20% uniform mixing limits false precision on noisy draws.
-    estimate = .8 * estimate + .2 * .1
-    estimate = np.maximum(estimate, 0.)
+    baseline = np.mean([models[name] for name in names], axis=0)
+    baseline = .8 * baseline + .2 * .1
+    chosen = None
+    validation_n = 0
+
+    # 240 recent outcomes, evaluated at stride 3 to reduce cloud computation.
+    # The first half selects candidates; the second half confirms on unseen targets.
+    if n >= 400:
+        indices = list(range(max(150, n - 240), n, 3))
+        midpoint = len(indices) // 2
+        scores = {name: [[], []] for name in (*names, "等权融合")}
+        for j, i in enumerate(indices):
+            earlier = _digit_model_distributions(values[:i], half_life)
+            blended = .8 * np.mean([earlier[name] for name in names], axis=0) + .2 * .1
+            candidates = dict(earlier)
+            candidates["等权融合"] = blended
+            actual = int(values[i])
+            for name, prob in candidates.items():
+                top7 = np.argsort(-prob, kind="stable")[:7]
+                scores[name][0 if j < midpoint else 1].append(int(actual in top7))
+        validation_n = len(indices)
+        # Select using only the first half. The confirmation half cannot
+        # be used to pick among multiple candidates (avoids double dipping).
+        selected = max(names, key=lambda name: (np.mean(scores[name][0]), -names.index(name)))
+        selection_edge = np.mean(scores[selected][0]) - np.mean(scores["等权融合"][0])
+        confirmation_edge = np.mean(scores[selected][1]) - np.mean(scores["等权融合"][1])
+        confirmation_rate = np.mean(scores[selected][1])
+        if selection_edge >= .025 and confirmation_edge >= .025 and confirmation_rate >= .725:
+            chosen = selected
+
+    if chosen is None:
+        estimate = baseline
+        weights = {name: 1.0 / len(names) for name in names}
+    else:
+        # Shrink selected model toward the precommitted baseline to limit variance.
+        estimate = .5 * baseline + .5 * (.8 * models[chosen] + .2 * .1)
+        weights = {name: .5 / len(names) + (.5 if name == chosen else 0.0) for name in names}
+    estimate = np.maximum(estimate, 0.0)
     estimate /= estimate.sum()
-    return estimate, {name: float(weights[j]) for j, name in enumerate(names)}, len(range(first, len(values), 5))
+    return estimate, weights, validation_n
 
 
 V63_DIGIT_STATE = DATA_DIR / "v63_digit_calibration.json"
@@ -1256,32 +1279,45 @@ def _six_candidates(values, half_life):
     return candidates
 
 
-def _six_select_model(values, half_life, points=180):
-    """Strictly causal validation: choose 6 before observing each target.
+def _six_select_model(values, half_life, points=240):
+    """Two-stage strictly causal selection with an untouched confirmation segment.
 
-    A selection threshold and uniform fallback reduce chasing random differences.
-    The result is descriptive, not a guarantee of an advantage over 60%.
+    First half chooses a candidate; second half only confirms the already chosen
+    candidate. If it does not beat the equal blend on BOTH segments, keep blend.
+    No future draw is used to construct its own prediction.
     """
     values = np.asarray(values, dtype=int)
     first = max(150, len(values) - points * 2)
     score = {name: [0, 0] for name in SIX_MODEL_NAMES}
-    for i in range(first, len(values), 2):
+    segments = [{name: [0, 0] for name in SIX_MODEL_NAMES} for _ in range(2)]
+    indices = list(range(first, len(values), 2))
+    midpoint = len(indices) // 2
+    for j, i in enumerate(indices):
         candidates = _six_candidates(values[:i], half_life)
         actual = int(values[i])
+        bucket = segments[0 if j < midpoint else 1]
         for name in SIX_MODEL_NAMES:
-            score[name][0] += int(actual in _six_rank(candidates[name]))
+            hit = int(actual in _six_rank(candidates[name]))
+            score[name][0] += hit
             score[name][1] += 1
-    count = score["五模型等权"][1]
-    if count < 80:
-        return "五模型等权", score, "样本不足，采用等权模型"
-    # Compare against a common default and require >= 3 percentage point gain
-    # in held-out causal hit rate; selection itself can overfit this sample.
-    baseline_rate = score["五模型等权"][0] / count
-    best = max(SIX_MODEL_NAMES, key=lambda name: (score[name][0] / count, -SIX_MODEL_NAMES.index(name)))
-    best_rate = score[best][0] / count
-    if best != "五模型等权" and best_rate >= baseline_rate + .03 and best_rate >= .60 + .03:
-        return best, score, "历史滚动验证选定；未来不保证保持优势"
-    return "五模型等权", score, "差距不足，采用稳健等权模型"
+            bucket[name][0] += hit
+            bucket[name][1] += 1
+    default = "五模型等权"
+    if midpoint < 60 or len(indices) - midpoint < 60:
+        return default, score, "独立验证样本不足，采用等权模型"
+    train = segments[0]
+    confirm = segments[1]
+    train_rate = lambda name: train[name][0] / train[name][1]
+    confirm_rate = lambda name: confirm[name][0] / confirm[name][1]
+    candidate = max(SIX_MODEL_NAMES, key=lambda name: (train_rate(name), -SIX_MODEL_NAMES.index(name)))
+    # The confirmation segment was not used to pick candidate. Require a
+    # meaningful edge in both halves to guard against one-window overfitting.
+    if candidate != default and (train_rate(candidate) >= train_rate(default) + .025
+            and confirm_rate(candidate) >= confirm_rate(default) + .025
+            and confirm_rate(candidate) >= .625):
+        return candidate, score, ("前段选模、后段独立验证均超过等权至少2.5个百分点；"
+                                  "未来仍可能回落")
+    return default, score, "独立验证未确认稳定优势，采用等权模型"
 
 
 def six_digit_forecast(history, per_position):
@@ -1682,8 +1718,8 @@ six_calibration = calibrate_six_models(df, six_ledger, half_life)
 six_forecast = six_digit_forecast(df, six_calibration)
 six_report_status = build_six_reports(six_ledger)
 
-st.subheader("V6.5 区域一：三球六码独立预测")
-st.caption(f"目标：第 {latest_issue + 1} 期｜六码独立滚动验证选模；每球6个不重复数字，理论覆盖率60%。")
+st.subheader("V6.5.6 区域一：三球六码独立预测")
+st.caption(f"目标：第 {latest_issue + 1} 期｜六码前段选模+后段独立验证；每球6个不重复数字，公平独立开奖理论覆盖率60%。")
 six_columns = st.columns(3)
 for pos, column in zip(("A", "B", "C"), six_columns):
     with column:
