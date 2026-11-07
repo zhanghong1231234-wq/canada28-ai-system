@@ -187,7 +187,36 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+import hmac
 
+def check_password():
+    if st.session_state.get("authenticated", False):
+        return True
+
+    st.title("🔐 Canada28 Matrix AI V6.5.1")
+    st.subheader("请输入登录密码")
+
+    password = st.text_input(
+        "访问密码",
+        type="password",
+        key="login_password"
+    )
+
+    if st.button("登录", type="primary"):
+        expected = str(st.secrets.get("APP_PASSWORD", ""))
+
+        if expected and hmac.compare_digest(password, expected):
+            st.session_state["authenticated"] = True
+            st.session_state.pop("login_password", None)
+            st.rerun()
+        else:
+            st.error("密码错误，请重新输入")
+
+    return False
+
+
+if not check_password():
+    st.stop()
 st.title("Canada28 Matrix AI V6.5.1")
 st.caption(
     "历史数据驱动的大小 / 单双概率研究。数据来自 pc28.world；"
