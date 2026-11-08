@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V6.6.0
+"""Canada28 Matrix AI V6.6.1
 三球六码与七码独立分析工具。仅作统计研究，不保证预测准确。
 """
 import os
@@ -183,7 +183,7 @@ def parse_beijing_time(value):
         return None
 
 st.set_page_config(
-    page_title="Canada28 Matrix AI V6.6.0",
+    page_title="Canada28 Matrix AI V6.6.1",
     page_icon="📊",
     layout="wide",
 )
@@ -193,7 +193,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.title("🔐 Canada28 Matrix AI V6.6.0")
+    st.title("🔐 Canada28 Matrix AI V6.6.1")
     st.subheader("请输入登录密码")
 
     password = st.text_input(
@@ -217,7 +217,7 @@ def check_password():
 
 if not check_password():
     st.stop()
-st.title("Canada28 Matrix AI V6.6.0｜三球六码 + 三球七码")
+st.title("Canada28 Matrix AI V6.6.1｜三球六码 + 三球七码")
 st.caption(
     "历史开奖数据驱动的三球六码 / 七码统计研究。数据来自 pc28.world；"
     "统计概率不代表能够预测随机开奖结果，也不构成投注建议。"
@@ -1047,7 +1047,14 @@ def update_seven_digit_ledger(history, prediction):
     """Write once per future issue, then only settle against observed draw numbers."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        log = pd.read_csv(V61_DIGIT_FILE, dtype={f"{p}七码": str for p in ("A", "B", "C")})
+        log = pd.read_csv(
+            V61_DIGIT_FILE,
+            dtype={
+                **{f"{p}七码": str for p in ("A", "B", "C")},
+                **{f"{p}实际号码": str for p in ("A", "B", "C")},
+                **{f"{p}是否命中": str for p in ("A", "B", "C")},
+            },
+        )
     except (FileNotFoundError, pd.errors.EmptyDataError):
         log = pd.DataFrame(columns=V61_DIGIT_COLS)
     for col in V61_DIGIT_COLS:
@@ -1111,7 +1118,14 @@ def update_six_digit_ledger(history, predictions):
     """Lock a first six-digit forecast for a future issue; settle only actual draws."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        log = pd.read_csv(V64_SIX_FILE, dtype={f"{p}六码": str for p in ("A", "B", "C")})
+        log = pd.read_csv(
+            V64_SIX_FILE,
+            dtype={
+                **{f"{p}六码": str for p in ("A", "B", "C")},
+                **{f"{p}实际号码": str for p in ("A", "B", "C")},
+                **{f"{p}是否命中": str for p in ("A", "B", "C")},
+            },
+        )
     except (FileNotFoundError, pd.errors.EmptyDataError):
         log = pd.DataFrame(columns=V64_SIX_COLS)
     for col in V64_SIX_COLS:
@@ -1619,7 +1633,12 @@ def settle_digit_ledgers_fast(draw_rows):
     for path, columns, width, suffix in specs:
         try:
             ledger = pd.read_csv(
-                path, dtype={f"{pos}{suffix}": str for pos in ("A", "B", "C")}
+                path,
+                dtype={
+                    **{f"{pos}{suffix}": str for pos in ("A", "B", "C")},
+                    **{f"{pos}实际号码": str for pos in ("A", "B", "C")},
+                    **{f"{pos}是否命中": str for pos in ("A", "B", "C")},
+                },
             )
         except (FileNotFoundError, pd.errors.EmptyDataError):
             continue
@@ -1763,7 +1782,7 @@ six_calibration = calibrate_six_models(df, six_ledger, half_life)
 six_forecast = six_digit_forecast(df, six_calibration)
 six_report_status = build_six_reports(six_ledger)
 
-st.subheader("V6.6.0 区域一：三球六码独立预测")
+st.subheader("V6.6.1 区域一：三球六码独立预测")
 st.caption(f"目标：第 {latest_issue + 1} 期｜六码前段选模+后段独立验证；每球6个不重复数字，公平独立开奖理论覆盖率60%。")
 six_columns = st.columns(3)
 for pos, column in zip(("A", "B", "C"), six_columns):
@@ -1826,7 +1845,7 @@ with st.expander("六码50期分档与北京时间每日整理", expanded=False)
         else:
             st.info(f"{label}尚无符合条件的记录。")
 st.divider()
-st.subheader("V6.6.0 区域二：三球七码独立预测与报告")
+st.subheader("V6.6.1 区域二：三球七码独立预测与报告")
 st.caption("以下保留V6.3.1原有七码台账、独立校准、50期分档及日报；不修改历史记录。")
 
 st.subheader("50期分档与北京时间每日整理")
