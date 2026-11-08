@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V6.5.7
-历史统计与大小/单双概率研究工具。非投注软件，不保证预测准确。
+"""Canada28 Matrix AI V6.6.0
+三球六码与七码独立分析工具。仅作统计研究，不保证预测准确。
 """
 import os
 import sqlite3
@@ -183,7 +183,7 @@ def parse_beijing_time(value):
         return None
 
 st.set_page_config(
-    page_title="Canada28 Matrix AI V6.5.7",
+    page_title="Canada28 Matrix AI V6.6.0",
     page_icon="📊",
     layout="wide",
 )
@@ -193,7 +193,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.title("🔐 Canada28 Matrix AI V6.5.7")
+    st.title("🔐 Canada28 Matrix AI V6.6.0")
     st.subheader("请输入登录密码")
 
     password = st.text_input(
@@ -217,9 +217,9 @@ def check_password():
 
 if not check_password():
     st.stop()
-st.title("Canada28 Matrix AI V6.5.7")
+st.title("Canada28 Matrix AI V6.6.0｜三球六码 + 三球七码")
 st.caption(
-    "历史数据驱动的大小 / 单双概率研究。数据来自 pc28.world；"
+    "历史开奖数据驱动的三球六码 / 七码统计研究。数据来自 pc28.world；"
     "统计概率不代表能够预测随机开奖结果，也不构成投注建议。"
 )
 
@@ -1562,10 +1562,8 @@ with st.sidebar:
     st.header("系统设置")
     import_count = st.selectbox("首次同步历史期数", [1000, 3000, 5000], index=2)
     half_life = st.slider("初始近期权重半衰期（期）", 100, 2000, 500, 50)
-    prior_strength = st.slider("初始先验平滑强度", 0, 1000, 200, 25)
-    min_edge = st.slider("概率差参考门槛（仅显示，不过滤）", 1, 10, 3) / 100
     auto_sync = st.checkbox("开启自动同步（每210秒）", value=True)
-    st.caption("网页运行时每5秒检查最新开奖，每210秒补充历史。每50期校准统计平滑参数；大小与单双分别采用九模型动态权重。")
+    st.caption("网页运行时每5秒检查最新一期；发现新开奖立即核对六码/七码。每210秒补充最近历史，校准按每球50条已核对预测执行。")
     st.caption("数据来源：pc28.world（第三方只读数据接口）")
 
 try:
@@ -1583,10 +1581,12 @@ with st.sidebar:
 
 if "history_df" not in st.session_state:
     st.session_state.history_df = read_local()
-if "last_sync" not in st.session_state:
-    st.session_state.last_sync = 0.0
+if "last_history_sync" not in st.session_state:
+    st.session_state.last_history_sync = time.time()
 if "sync_message" not in st.session_state:
     st.session_state.sync_message = "尚未执行本次会话同步"
+if "countdown_payload" not in st.session_state:
+    st.session_state.countdown_payload = {}
 
 
 def perform_initial_sync():
@@ -1595,7 +1595,7 @@ def perform_initial_sync():
         merged = merge_data(st.session_state.history_df, incoming)
         st.session_state.history_df = merged
         save_local(merged)
-        st.session_state.last_sync = time.time()
+        st.session_state.last_history_sync = time.time()
         st.session_state.sync_message = f"历史同步完成：当前保存 {len(merged)} 期"
 
 
@@ -1605,52 +1605,68 @@ if st.session_state.history_df.empty:
     except Exception as exc:
         st.error(f"首次同步失败：{exc}")
         st.info("请稍后刷新页面，或检查 pc28.world 接口是否可访问。")
-# 轻量检查最新期号每5秒执行一次；发现新期开奖立即写入历史并触发页面重绘。
-# 完整历史补充/维护仍按210秒执行，避免把210秒误当成最新开奖的等待时间。
+
+
+# 轻量轮询只读取 /draws/latest；不再在每次新开奖时先下载200期历史。
+# 新一期先立即入库并触发台账核对；完整补缺仍由独立的210秒任务完成。
 @st.fragment(run_every=5 if auto_sync else None)
 def sync_clock():
     if auto_sync and not st.session_state.history_df.empty:
         try:
-            latest = fetch_latest()
+            latest_payload = fetch_latest_payload()
+            st.session_state.countdown_payload = latest_payload.get("countdown", {}) or {}
+            latest_rows = normalize_rows(unwrap_draws(latest_payload))
+            latest = latest_rows[0] if latest_rows else None
             current_max = int(st.session_state.history_df["期号"].max())
 
             if latest and int(latest["期号"]) > current_max:
-                # 先将接口最新一期合并进本地历史，随后主页面会自动核对预测台账。
-                recent = normalize_rows(unwrap_draws(api_json("/draws", {"limit": 200})))
-                latest_df = pd.DataFrame(recent) if recent else pd.DataFrame([latest])
+                gap = int(latest["期号"]) - current_max
+                # 正常只差一期时直接使用 latest 接口结果，避免等待200期历史请求。
+                # 若发现跨期跳号，则立即补抓最近200期，避免遗漏已开奖期数。
+                if gap == 1:
+                    incoming = pd.DataFrame([latest])
+                else:
+                    recent = normalize_rows(
+                        unwrap_draws(api_json("/draws", {"limit": 200}, timeout=10))
+                    )
+                    incoming = pd.DataFrame(recent) if recent else pd.DataFrame([latest])
+
                 st.session_state.history_df = merge_data(
-                    st.session_state.history_df, latest_df
+                    st.session_state.history_df, incoming
                 )
                 save_local(st.session_state.history_df)
                 st.session_state.sync_message = (
-                    f"发现新期开奖，已同步至第 {int(latest['期号'])} 期"
+                    f"发现新期开奖，已立即同步至第 {int(latest['期号'])} 期"
                 )
-                st.session_state.last_sync = time.time()
                 st.rerun(scope="app")
 
-            elapsed = time.time() - st.session_state.last_sync
+            elapsed = time.time() - st.session_state.last_history_sync
             if elapsed >= AUTO_SYNC_SECONDS:
-                # 每210秒补充最近200期，确保历史数据与最新期号连续。
                 recent = normalize_rows(
-                    unwrap_draws(api_json("/draws", {"limit": 200}))
+                    unwrap_draws(api_json("/draws", {"limit": 200}, timeout=12))
                 )
                 if recent:
+                    before_max = int(st.session_state.history_df["期号"].max())
                     st.session_state.history_df = merge_data(
                         st.session_state.history_df, pd.DataFrame(recent)
                     )
                     save_local(st.session_state.history_df)
-                st.session_state.last_sync = time.time()
+                    after_max = int(st.session_state.history_df["期号"].max())
+                else:
+                    before_max = after_max = current_max
+                st.session_state.last_history_sync = time.time()
                 st.session_state.sync_message = (
-                    f"已完成210秒历史同步；当前最新期号第 "
-                    f"{int(st.session_state.history_df['期号'].max())} 期"
+                    f"210秒历史补同步完成；当前最新第 {after_max} 期"
                 )
-                if int(st.session_state.history_df["期号"].max()) > current_max:
+                if after_max > before_max:
                     st.rerun(scope="app")
         except Exception as exc:
-            st.session_state.sync_message = f"自动同步暂时失败：{exc}"
+            st.session_state.sync_message = f"自动同步暂时失败：{type(exc).__name__}: {exc}"
+
     st.caption(
-        f"最新期号检查：每5秒｜完整历史同步：每210秒｜{st.session_state.sync_message}"
+        f"最新开奖检查：每5秒｜历史补同步：每210秒｜{st.session_state.sync_message}"
     )
+
 
 sync_clock()
 
@@ -1667,38 +1683,10 @@ if df.empty:
 latest_issue = int(df["期号"].max())
 latest_time = str(df.iloc[-1].get("开奖时间", ""))
 
-# 自动校准参数：首次运行以侧边栏参数为初始值，此后每50期新开奖重新评估。
-half_life, prior_strength, calibration_state, calibration_status = calibrate_every_50(
-    df, half_life, prior_strength
-)
-st.info(
-    f"统计参数校准：{calibration_status}｜当前半衰期 {half_life} 期｜"
-    f"平滑强度 {prior_strength}｜累计完成 {calibration_state.get('completed_batches', 0)} 轮"
-)
-probs = ensemble_probs(df, half_life, prior_strength)
+# 大小/单双预测模块已从V6.6.0主流程移除；六码与七码独立运行。
+# 旧的大小单双CSV和PostgreSQL记录保留备份，不再生成新记录。
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=4)
-def cached_dynamic_weights(frame, hl, prior):
-    return dynamic_model_weights(frame, hl, prior, validation_tests=100)
-
-# Recalculate adaptive weights only once per 50 new draws, not on each refresh.
-# The next prediction still uses all latest historical draws in ensemble_probs.
-weight_end = len(df) - (len(df) % 50)
-weight_frame = df.iloc[:max(100, weight_end)].copy()
-weight_state = cached_dynamic_weights(weight_frame, half_life, prior_strength)
-dynamic_probs = apply_dynamic_weights(probs, weight_state)
-probs["big"]["final"] = dynamic_probs["big"]
-probs["odd"]["final"] = dynamic_probs["odd"]
-save_weight_snapshot(int(weight_frame["期号"].iloc[-1]), weight_state, half_life, prior_strength)
-ledger_df = update_forecast_ledger(df, probs)
-p_big = probs["big"]["final"]
-p_odd = probs["odd"]["final"]
-big_pick = "大" if p_big >= 0.5 else "小"
-big_edge = abs(p_big - 0.5)
-odd_pick = "单" if p_odd >= 0.5 else "双"
-odd_edge = abs(p_odd - 0.5)
-
-# V6.1 prospective 7-of-10 forecasts, separate from the existing big/odd ledger.
+# V6.1 prospective 7-of-10 forecasts; kept as an independent historical ledger.
 # Read the existing ledger first so that calibration counts only actual prospective predictions.
 # The update function also settles past entries and locks the current issue exactly once.
 # First settle existing records without altering a previously locked forecast.
@@ -1709,7 +1697,7 @@ digit_calibration = calibrate_digit_models(df, seven_ledger, half_life)
 seven_forecast = seven_digit_forecast(df, half_life, digit_calibration)
 report_status = build_digit_reports(seven_ledger)
 
-# V6.4 six-digit models are independent of the existing seven-digit records.
+# V6.4 six-digit models are independent of the seven-digit records.
 # Start with current calibrated half-life, then lock the six-digit issue once.
 six_default_cfg = {pos: {"half_life": half_life} for pos in ("A", "B", "C")}
 six_initial = six_digit_forecast(df, six_default_cfg)
@@ -1718,7 +1706,7 @@ six_calibration = calibrate_six_models(df, six_ledger, half_life)
 six_forecast = six_digit_forecast(df, six_calibration)
 six_report_status = build_six_reports(six_ledger)
 
-st.subheader("V6.5.6 区域一：三球六码独立预测")
+st.subheader("V6.6.0 区域一：三球六码独立预测")
 st.caption(f"目标：第 {latest_issue + 1} 期｜六码前段选模+后段独立验证；每球6个不重复数字，公平独立开奖理论覆盖率60%。")
 six_columns = st.columns(3)
 for pos, column in zip(("A", "B", "C"), six_columns):
@@ -1781,7 +1769,7 @@ with st.expander("六码50期分档与北京时间每日整理", expanded=False)
         else:
             st.info(f"{label}尚无符合条件的记录。")
 st.divider()
-st.subheader("V6.5 区域二：原有七码分析与报告")
+st.subheader("V6.6.0 区域二：三球七码独立预测与报告")
 st.caption("以下保留V6.3.1原有七码台账、独立校准、50期分档及日报；不修改历史记录。")
 
 st.subheader("50期分档与北京时间每日整理")
@@ -1852,463 +1840,55 @@ with st.expander("V6.3 三球七码事前预测记录与开奖核对（继承V6.
                            data=seven_ledger.to_csv(index=False).encode("utf-8-sig"),
                            file_name="v61_seven_digit_log.csv", mime="text/csv")
 
-st.subheader("最近50期大小单双走势分析")
-recent_50 = df.tail(50).copy()
-trend_big = trend_50_stats((recent_50["和值"].to_numpy() >= 14).astype(int))
-trend_odd = trend_50_stats((recent_50["和值"].to_numpy() % 2 == 1).astype(int))
-t1, t2 = st.columns(2)
-with t1:
-    st.markdown("#### 大小走势")
-    st.write(f"最近{trend_big['n']}期：大 {trend_big['yes']} 期 / 小 {trend_big['no']} 期")
-    st.progress(trend_big['yes'] / max(1, trend_big['n']))
-    st.caption(f"当前连续{'大' if trend_big['last'] else '小'} {trend_big['streak']} 期｜大小转换 {trend_big['changes']} 次")
-    tb = probs['big']['trend50']
-    st.write(f"**50期走势模型：{'大' if tb >= .5 else '小'}**｜大 {tb*100:.1f}% / 小 {(1-tb)*100:.1f}%")
-with t2:
-    st.markdown("#### 单双走势")
-    st.write(f"最近{trend_odd['n']}期：单 {trend_odd['yes']} 期 / 双 {trend_odd['no']} 期")
-    st.progress(trend_odd['yes'] / max(1, trend_odd['n']))
-    st.caption(f"当前连续{'单' if trend_odd['last'] else '双'} {trend_odd['streak']} 期｜单双转换 {trend_odd['changes']} 次")
-    to = probs['odd']['trend50']
-    st.write(f"**50期走势模型：{'单' if to >= .5 else '双'}**｜单 {to*100:.1f}% / 双 {(1-to)*100:.1f}%")
-with st.expander("最近50期开奖记录", expanded=False):
-    st.dataframe(recent_50[["期号", "开奖时间", "A", "B", "C", "和值", "大小", "单双"]].iloc[::-1],
-                 use_container_width=True, hide_index=True)
-st.caption("走势模型采用频率、短期变化和状态转换，并向50%收缩；它是统计估计，不意味着随机开奖存在可预测规律。")
-st.divider()
-
-with st.expander("V5.9 九模型动态权重与自动校准", expanded=True):
-    st.write(
-        f"大小权重验证样本：{weight_state.get('validation_n', 0)}期｜"
-        f"单双权重验证样本：{weight_state.get('validation_n', 0)}期"
-    )
-    weight_rows = []
-    for key, name in MODEL_NAMES.items():
-        weight_rows.append({
-            "模型": name,
-            "大小权重": f"{weight_state['big'][key] * 100:.1f}%",
-            "单双权重": f"{weight_state['odd'][key] * 100:.1f}%",
-        })
-    st.dataframe(pd.DataFrame(weight_rows), use_container_width=True, hide_index=True)
-    st.caption(
-        "权重每次新数据触发重算，每50期重算一次；每50期仍执行原统计参数校准。"
-        "权重由最近100个可用目标的逐期回测命中率和Brier分数估计，并向等权重收缩，"
-        "以降低短期过拟合。滚动验证仍可能有模型选择偏差，不保证未来命中率提高。"
-    )
-
-st.subheader("下一期预测")
-latest_time_beijing = format_beijing_time(latest_time)
-target_issue = latest_issue + 1
-st.caption(
-    f"当前数据截至：第 {latest_issue} 期"
-    + (f"｜最近开奖时间（北京时间）：{latest_time_beijing}" if latest_time_beijing else "")
-    + f"｜下一期目标：第 {target_issue} 期｜有效历史：{len(df):,} 期"
-)
-
-st.markdown("### 大小预测")
-st.metric("大（14–27）", f"{p_big * 100:.1f}%")
-st.progress(float(np.clip(p_big, 0, 1)))
-st.metric("小（0–13）", f"{(1-p_big) * 100:.1f}%")
-st.markdown(f"**分析结果：{big_pick}**")
-st.caption(f"与50%基准的概率差：{big_edge*100:.1f}个百分点")
-
-st.divider()
-
-st.markdown("### 单双预测")
-st.metric("单", f"{p_odd * 100:.1f}%")
-st.progress(float(np.clip(p_odd, 0, 1)))
-st.metric("双", f"{(1-p_odd) * 100:.1f}%")
-st.markdown(f"**分析结果：{odd_pick}**")
-st.caption(f"与50%基准的概率差：{odd_edge*100:.1f}个百分点")
-
-st.info(
-    "方案B：每期都给出大小和单双方向，哪怕概率接近50%。"
-    "这些概率是模型估计，不保证未来命中率高于50%。"
-)
-
-# 结果和值拆解：例如 A=4、B=4、C=8，则显示 4 + 4 + 8 = 16。
-st.markdown("### 最近一期开奖结果")
+# 最近开奖结果仅显示开奖号码与和值，不再展示大小/单双预测。
 latest_row = df.sort_values("期号").iloc[-1]
 a_num, b_num, c_num = int(latest_row["A"]), int(latest_row["B"]), int(latest_row["C"])
 draw_sum = int(latest_row["和值"])
-r1, r2, r3, r4 = st.columns(4)
+st.subheader("最近一期开奖结果")
+r1, r2 = st.columns(2)
 r1.metric("开奖号码", f"{a_num} + {b_num} + {c_num}")
-r2.metric("和值", str(draw_sum))
-r3.metric("大小", str(latest_row["大小"]))
-r4.metric("单双", str(latest_row["单双"]))
+r2.metric("和值", f"{a_num} + {b_num} + {c_num} = {draw_sum}")
+st.caption(f"开奖期号：第 {latest_issue} 期｜北京时间：{format_beijing_time(latest_time)}")
 
-# 直接读取 pc28.world /draws/latest 返回的 countdown 字段，不再用开奖时间+210秒估算。
-st.markdown("### 下一期开奖倒计时")
+st.subheader("下一期开奖倒计时")
 
 @st.fragment(run_every=5)
 def draw_countdown():
     try:
-        latest_payload = fetch_latest_payload()
-        countdown_data = latest_payload.get("countdown", {})
+        countdown_data = st.session_state.get("countdown_payload", {})
         if not isinstance(countdown_data, dict):
             countdown_data = {}
-
         seconds_value = countdown_data.get("seconds")
         next_draw_at = countdown_data.get("next_draw_at")
         fetched_at = beijing_now()
 
         if next_draw_at is not None:
-            # API 的 next_draw_at 使用 Unix 毫秒时间戳。
             target_timestamp = float(next_draw_at)
             if target_timestamp > 10_000_000_000:
                 target_timestamp /= 1000.0
             target_dt = datetime.fromtimestamp(target_timestamp, tz=BEIJING_TZ)
             seconds_left = max(0, int((target_dt - fetched_at).total_seconds()))
             time_text = target_dt.strftime("%Y-%m-%d %H:%M:%S")
-            source_label = "下一期开奖时间来自 pc28.world 实时接口"
+            source_label = "开奖时间来自 pc28.world 实时接口"
         elif seconds_value is not None:
-            # 兼容只返回 seconds 的接口版本，以服务器返回的秒数为基准。
             seconds_left = max(0, int(float(seconds_value)))
             target_dt = fetched_at + timedelta(seconds=seconds_left)
             time_text = target_dt.strftime("%Y-%m-%d %H:%M:%S")
             source_label = "倒计时秒数来自 pc28.world 实时接口"
         else:
-            st.warning("数据源暂未返回 countdown.seconds 或 countdown.next_draw_at，无法显示实时倒计时。")
-            st.caption("系统不会再用210秒间隔自行估算。请稍后重试。")
+            st.info("等待下一次5秒轮询取得数据源倒计时。")
             return
 
         mins, secs = divmod(seconds_left, 60)
         hours, mins = divmod(mins, 60)
         countdown_text = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours else f"{mins:02d}:{secs:02d}"
-        if seconds_left > 0:
-            st.metric("实时预计开奖倒计时", countdown_text)
-        else:
-            st.warning("数据源倒计时已到，等待最新开奖结果同步。")
-        st.caption(f"预计开奖时间（北京时间）：{time_text}｜{source_label}｜每5秒刷新一次")
+        st.metric("实时预计开奖倒计时", countdown_text)
+        st.caption(f"预计开奖时间（北京时间）：{time_text}｜{source_label}")
     except Exception as exc:
-        st.warning(f"暂时无法读取数据源实时倒计时：{exc}")
-        st.caption("请稍后刷新页面；自动同步历史开奖仍保持每210秒一次。")
+        st.warning(f"暂时无法显示实时倒计时：{type(exc).__name__}: {exc}")
+
 
 draw_countdown()
-
-with st.expander("查看模型分项概率", expanded=False):
-    detail_rows = []
-    for target, title, labels in [
-        ("big", "大小", ("大", "小")),
-        ("odd", "单双", ("单", "双")),
-    ]:
-        result = probs[target]
-        for key, name in [*MODEL_NAMES.items(), ("final", "动态权重综合")]:
-            p = result[key]
-            detail_rows.append({
-                "玩法": title,
-                "统计模型": name,
-                labels[0]: f"{p*100:.1f}%",
-                labels[1]: f"{(1-p)*100:.1f}%",
-            })
-    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
-
-with st.expander("V6.0 九模型真实事前分段对比（50 / 100 / 200 / 500期）", expanded=True):
-    st.caption("仅使用V5.9以来真实开奖前保存的九模型概率；所有模型使用同一组已核对期号。"
-               "不同窗口相互重叠，不能当成独立实验；历史排名不代表未来优势。")
-    selected_window = st.selectbox("查看最近多少期真实事前记录", [50, 100, 200, 500],
-                                   index=2, key="v60_prospective_window")
-    for target, label in (("big", "大小"), ("odd", "单双")):
-        st.markdown(f"#### {label}九模型分段成绩")
-        window_table = prospective_model_window_scores(ledger_df, target, selected_window)
-        if window_table.empty:
-            st.info("暂无完整九模型事前记录。")
-            continue
-        display = window_table.copy()
-        display["命中率"] = display["命中率"].map(
-            lambda x: "—" if pd.isna(x) else f"{x * 100:.1f}%")
-        display["Brier"] = display["Brier"].map(lambda x: f"{x:.5f}")
-        display["相对50%基准"] = display["相对50%基准"].map(lambda x: f"{x:+.5f}")
-        st.dataframe(display, use_container_width=True, hide_index=True)
-        st.caption(f"本窗口共同有效样本：{int(window_table['已核对期数'].iloc[0])}期。"
-                   "Brier低于0.25000表示样本内较优，不代表统计显著或可预测未来。")
-
-with st.expander("V6.0 动态权重历史记录", expanded=False):
-    st.caption("只从V6.0启用后开始记录权重快照，不补造以前的权重。"
-               "此表用于核对权重变化，不自动根据短期第一名激进调权。")
-    if V60_WEIGHT_HISTORY_FILE.exists():
-        try:
-            weight_history = pd.read_csv(V60_WEIGHT_HISTORY_FILE)
-            st.write(f"已保存 {len(weight_history)} 条权重快照（大小、单双分别记录）。")
-            st.dataframe(weight_history.tail(30).iloc[::-1],
-                         use_container_width=True, hide_index=True)
-            st.download_button("下载V6.0权重历史CSV",
-                data=weight_history.to_csv(index=False).encode("utf-8-sig"),
-                file_name="v60_weight_history.csv", mime="text/csv")
-        except Exception as exc:
-            st.warning(f"暂时无法读取权重历史：{type(exc).__name__}")
-    else:
-        st.info("等待首次权重快照。")
-
-with st.expander("九模型完整历史回测（逐期向前验证）", expanded=False):
-    test_count = st.selectbox("回测最近多少期", [100, 300, 500], index=0)
-    if st.button("运行九模型与动态权重回测"):
-        with st.spinner("正在运行低CPU回测；机器学习每150个测试目标重新训练，请稍候…"):
-            result = rolling_backtest(df, half_life, prior_strength, tests=test_count)
-        if result:
-            st.write(f"测试期数：{result['n']}｜权重预热期数：{result.get('warmup', 0)}")
-            for note in result.get("notes", []):
-                st.warning(note)
-            display = result["models"].copy()
-            for col in ["大小命中率", "单双命中率"]:
-                display[col] = display[col].map(lambda x: f"{x*100:.1f}%")
-            for col in ["大小Brier分数", "单双Brier分数"]:
-                display[col] = display[col].map(lambda x: f"{x:.4f}")
-            st.dataframe(display, use_container_width=True, hide_index=True)
-            st.caption("新增『动态权重综合（严格逐期）』和『50%固定基准』。动态权重只使用当期以前已核对的模型成绩，最多回看300期；与九模型等权综合并排比较。机器学习每150个目标重训一次；线上每次计算新一期概率仍会训练轻量模型，回测与线上实现并非完全相同。历史成绩不能保证未来命中率。")
-        else:
-            st.warning("有效历史数据不足，至少需要120期。")
-
-with st.expander("V5.9 五段验证与一致性核对（500期，每段100期）", expanded=False):
-    st.caption("同一次逐期回测中按时间先后划分五段；每段100期。每一期只使用之前的数据，模型权重也仅依据已开奖历史。")
-    if st.button("运行500期分段验证", key="run_v56_segments"):
-        with st.spinner("正在运行500期分段验证，机器学习每150个目标重训一次，请勿重复点击…"):
-            segment_result = rolling_backtest(df, half_life, prior_strength, tests=500)
-        if segment_result is None or segment_result["n"] < 500:
-            st.warning("有效数据不足，无法完成完整500期分段验证。")
-        else:
-            records = segment_result["draw_results"].copy()
-            records["段号"] = (records["index"] // 100 + 1).astype(int)
-            model_labels = {"pattern": "历史相似状态", "final": "九模型等权综合",
-                            "dynamic": "动态权重综合", "baseline": "50%固定基准"}
-            records["模型"] = records["model"].map(model_labels)
-            records["项目"] = records["target"].map({"big": "大小", "odd": "单双"})
-            summary = (records.groupby(["段号", "项目", "模型"], as_index=False)
-                       .agg(期数=("hit", "size"), 命中率=("hit", "mean"), Brier分数=("brier", "mean")))
-            summary["时间段"] = summary["段号"].map(lambda x: f"第{x}段（从旧到新）")
-            summary["命中率"] = summary["命中率"].map(lambda x: f"{x*100:.1f}%")
-            summary["Brier分数"] = summary["Brier分数"].map(lambda x: f"{x:.4f}")
-            st.dataframe(summary[["时间段", "项目", "模型", "期数", "命中率", "Brier分数"]],
-                         use_container_width=True, hide_index=True)
-            st.download_button("下载分段验证CSV", data=summary.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="canada28_v56_segments.csv", mime="text/csv")
-            # Compare the exact same underlying draw-level records, never independently rerun.
-            st.markdown("#### 五段与500期汇总一致性检查")
-            checks = []
-            full_table = segment_result["models"].set_index("模型")
-            for key, model_name in model_labels.items():
-                for target, label, hit_col, brier_col in (
-                    ("big", "大小", "大小命中率", "大小Brier分数"),
-                    ("odd", "单双", "单双命中率", "单双Brier分数"),
-                ):
-                    subset = records[(records["model"] == key) & (records["target"] == target)]
-                    # records["model"] retains the original key, even though the display label is mapped.
-                    n = len(subset)
-                    hits = int(subset["hit"].sum())
-                    total_hit = float(full_table.loc[model_name if key != "dynamic" else
-                        "动态权重综合（严格逐期）", hit_col])
-                    total_brier = float(full_table.loc[model_name if key != "dynamic" else
-                        "动态权重综合（严格逐期）", brier_col])
-                    ok = (n == 500 and abs(hits / n - total_hit) < 1e-10
-                          and abs(float(subset["brier"].mean()) - total_brier) < 1e-10)
-                    checks.append({"项目": label, "模型": model_name, "分段命中数": hits,
-                                   "500期汇总命中数": round(total_hit * 500),
-                                   "检查": "一致" if ok else "不一致"})
-            check_df = pd.DataFrame(checks)
-            st.dataframe(check_df, use_container_width=True, hide_index=True)
-            if (check_df["检查"] == "一致").all():
-                st.success("同一次回测的分段结果与500期汇总完全一致。")
-            else:
-                st.error("检测到分段与汇总不一致，请下载结果检查。")
-            st.caption("不同时间运行的两次回测可能因新开奖进入500期窗口而不同；应以同一次计算的核对结果为准。")
-            st.caption("分段结果只代表过去500期，不能证明未来可预测；固定50%概率的方向命中率受平局判定规则影响，主要比较Brier分数。")
-
-with st.expander("逐期预测记录与开奖核对", expanded=True):
-    st.write(f"累计预测记录：{len(ledger_df)} 期")
-    st.caption("仅记录系统实际运行时生成的事前预测；离线或接口中断期间的期数不会事后补造预测。")
-
-    st.markdown("#### 大小预测记录")
-    big_table = ledger_df[[
-        "目标期号", "实际大小", "预测大小", "大小结果"
-    ]].copy()
-    big_table = big_table.rename(columns={
-        "目标期号": "期号", "实际大小": "实际大小", "预测大小": "预测大小", "大小结果": "结果"
-    })
-    big_table["期号"] = pd.to_numeric(big_table["期号"], errors="coerce")
-    big_table = big_table.sort_values("期号", ascending=False).head(50)
-    big_table["结果"] = big_table["结果"].map(
-        lambda x: {"正确": "✅ 正确", "错误": "❌ 错误", "等待开奖": "⏳ 等待开奖"}.get(str(x), str(x)))
-    big_table["实际大小"] = big_table["实际大小"].fillna("待开奖").replace({"None": "待开奖"})
-    st.dataframe(big_table, use_container_width=True, hide_index=True)
-
-    st.markdown("#### 单双预测记录")
-    odd_table = ledger_df[[
-        "目标期号", "实际单双", "预测单双", "单双结果"
-    ]].copy()
-    odd_table = odd_table.rename(columns={
-        "目标期号": "期号", "实际单双": "实际单双", "预测单双": "预测单双", "单双结果": "结果"
-    })
-    odd_table["期号"] = pd.to_numeric(odd_table["期号"], errors="coerce")
-    odd_table = odd_table.sort_values("期号", ascending=False).head(50)
-    odd_table["结果"] = odd_table["结果"].map(
-        lambda x: {"正确": "✅ 正确", "错误": "❌ 错误", "等待开奖": "⏳ 等待开奖"}.get(str(x), str(x)))
-    odd_table["实际单双"] = odd_table["实际单双"].fillna("待开奖").replace({"None": "待开奖"})
-    st.dataframe(odd_table, use_container_width=True, hide_index=True)
-
-    resolved_big = ledger_df[ledger_df["实际大小"].astype(str).isin(["大", "小"])]
-    resolved_odd = ledger_df[ledger_df["实际单双"].astype(str).isin(["单", "双"])]
-    st.caption(
-        f"大小已核对 {len(resolved_big)} 期，命中 {(resolved_big['大小结果'] == '正确').sum()} 期；"
-        f"单双已核对 {len(resolved_odd)} 期，命中 {(resolved_odd['单双结果'] == '正确').sum()} 期。"
-    )
-    st.download_button("下载逐期预测记录 CSV",
-        data=ledger_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="canada28_forecast_log.csv", mime="text/csv")
-    st.caption("每个目标期只保留首次预测概率，开奖后按期号分别核对。Streamlit 云端本地文件可能因重启丢失，请定期下载备份。")
-
-with st.expander("V5.9 未来开奖独立验证（仅事前记录）", expanded=True):
-    st.caption("只统计系统实际运行时提前保存、并在开奖后核对的记录；历史500期回测不计入此处。")
-    verified = ledger_df.copy()
-    for target, label, actual_col, pick_col, p_col, shadow_pick, shadow_p in (
-        ("big", "大小", "实际大小", "预测大小", "大小概率大",
-         "相似模型大小预测", "相似模型大小概率大"),
-        ("odd", "单双", "实际单双", "预测单双", "单双概率单",
-         "相似模型单双预测", "相似模型单双概率单"),
-    ):
-        st.markdown(f"#### {label}独立验证")
-        sample = verified[
-            verified[actual_col].astype(str).isin(["大", "小"] if target == "big" else ["单", "双"])
-            & verified[shadow_pick].astype(str).isin(["大", "小"] if target == "big" else ["单", "双"])
-        ].copy()
-        if sample.empty:
-            st.info(f"{label}暂无同时具备两种模型事前预测的已开奖记录；等待未来开奖积累样本。")
-            continue
-        y = (sample[actual_col].astype(str) == ("大" if target == "big" else "单")).astype(int)
-        rows = []
-        for name, pick, p in (
-            ("当前动态权重", pick_col, p_col),
-            ("历史相似状态（影子模型）", shadow_pick, shadow_p),
-        ):
-            prob = pd.to_numeric(sample[p], errors="coerce")
-            valid = prob.notna() & prob.between(0, 1) & sample[pick].notna()
-            if valid.sum() == 0:
-                continue
-            rows.append({"模型": name, "有效期数": int(valid.sum()),
-                         "命中率": f"{(sample.loc[valid, pick].astype(str) == sample.loc[valid, actual_col].astype(str)).mean()*100:.1f}%",
-                         "Brier分数": f"{((prob[valid] - y[valid])**2).mean():.4f}"})
-        rows.append({"模型": "固定50%概率", "有效期数": len(sample),
-                     "命中率": "—（不指定方向）", "Brier分数": "0.2500"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.caption(f"当前样本 {len(sample)} 期；少量样本的波动很大，不应作为投注依据。")
-    st.download_button("下载V5.9事前预测核对记录CSV",
-                       data=verified.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="canada28_v59_prospective_log.csv", mime="text/csv")
-    if get_database_url():
-        st.info("已配置持久PostgreSQL数据库，仍建议定期下载CSV备份。")
-    else:
-        st.warning("未配置持久数据库，云端本地文件可能在重启后丢失，请下载CSV备份。")
-
-with st.expander("V5.9 九模型真实事前独立成绩", expanded=True):
-    st.caption("只统计升级后在开奖前保存的各模型概率。旧预测不回填，确保不把历史回测冒充事前预测。")
-    for target, label, actual_col, positive in (
-        ("big", "大小", "实际大小", "大"),
-        ("odd", "单双", "实际单双", "单"),
-    ):
-        st.markdown(f"#### {label}：九模型独立成绩")
-        records = ledger_df[ledger_df[actual_col].astype(str).isin(
-            ["大", "小"] if target == "big" else ["单", "双"]
-        )].copy()
-        y_all = (records[actual_col].astype(str) == positive).astype(int)
-        rows = []
-        for key, name in MODEL_NAMES.items():
-            p = pd.to_numeric(records[f"V59_{target}_{key}_p"], errors="coerce")
-            valid = p.notna() & p.between(0, 1)
-            if not valid.any():
-                continue
-            y = y_all[valid]
-            pp = p[valid]
-            rows.append({"模型": name, "已核对期数": int(valid.sum()),
-                         "命中率": float(((pp >= 0.5).astype(int) == y).mean()),
-                         "Brier": float(((pp-y)**2).mean())})
-        if not rows:
-            st.info("尚无V5.9九模型事前记录；等待新一期开奖后自动积累。")
-        else:
-            table = pd.DataFrame(rows).sort_values(["Brier", "命中率"], ascending=[True, False])
-            table["命中率"] = table["命中率"].map(lambda v: f"{v*100:.1f}%")
-            table["Brier"] = table["Brier"].map(lambda v: f"{v:.5f}")
-            st.dataframe(table, use_container_width=True, hide_index=True)
-            st.caption("固定50%概率基准Brier=0.25000；短期排名不稳定，不能保证提高未来胜率。")
-    st.download_button("下载九模型真实事前预测CSV",
-                       data=ledger_df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="canada28_v59_nine_models.csv", mime="text/csv")
-
-with st.expander("V5.9 动态权重诊断", expanded=False):
-    st.caption("权重来自最近100期逐期回测并向等权重收缩；历史第一名不等于未来第一名。")
-    for target, label, hit_col, brier_col in (
-        ("big", "大小", "大小命中率", "大小Brier分数"),
-        ("odd", "单双", "单双命中率", "单双Brier分数"),
-    ):
-        st.markdown(f"#### {label}权重")
-        table = weight_state.get("table", pd.DataFrame())
-        if table is None or table.empty:
-            st.info("暂无可用验证数据。")
-            continue
-        table = table.set_index("模型")
-        rows = []
-        for key, name in MODEL_NAMES.items():
-            if name in table.index:
-                rows.append({"模型": name,
-                             "验证命中率": f"{float(table.loc[name, hit_col])*100:.1f}%",
-                             "验证Brier": f"{float(table.loc[name, brier_col]):.5f}",
-                             "当前权重": f"{weight_state[target][key]*100:.2f}%"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.caption("这里的权重验证窗口与手动回测窗口可能不同。")
-
-with st.expander("V5.9 真实事前成绩：50 / 100 / 500期", expanded=True):
-    score_rows = []
-    for label, actual_col, prediction_col, probability_col, positive in (
-        ("大小", "实际大小", "预测大小", "大小概率大", "大"),
-        ("单双", "实际单双", "预测单双", "单双概率单", "单"),
-    ):
-        settled = ledger_df[ledger_df[actual_col].astype(str).isin(
-            ["大", "小"] if label == "大小" else ["单", "双"]
-        )].copy()
-        settled["目标期号"] = pd.to_numeric(settled["目标期号"], errors="coerce")
-        settled = settled.sort_values("目标期号")
-        for window in (50, 100, 500):
-            sample = settled.tail(window)
-            p = pd.to_numeric(sample[probability_col], errors="coerce")
-            valid = p.notna() & p.between(0, 1)
-            sample, p = sample.loc[valid], p.loc[valid]
-            n = len(sample)
-            if not n:
-                score_rows.append({"项目": label, "窗口": f"最近{window}期",
-                                   "已核对": 0, "命中率": "—", "Brier分数": "—"})
-                continue
-            hits = (sample[prediction_col].astype(str) == sample[actual_col].astype(str)).sum()
-            y = (sample[actual_col].astype(str) == positive).astype(int)
-            score_rows.append({"项目": label, "窗口": f"最近{window}期",
-                               "已核对": n, "命中率": f"{hits/n*100:.1f}%",
-                               "Brier分数": f"{((p-y)**2).mean():.4f}"})
-    st.dataframe(pd.DataFrame(score_rows), use_container_width=True, hide_index=True)
-    st.caption("窗口不足50/100/500期时显示实际样本数；只统计真实保存并已核对的事前预测，不补造历史。")
-
-with st.expander("V5.9 预测台账一致性与漏期检查", expanded=True):
-    anomalies, issues = ledger_audit(ledger_df, df)
-    if issues:
-        for issue in issues:
-            st.warning(issue)
-    else:
-        st.success("未发现重复目标、目标期号错位、台账间断或实际开奖冲突。")
-    st.caption("期号跳跃可能是网站未运行时造成的，并不代表系统伪造预测。")
-    if not anomalies.empty:
-        st.dataframe(anomalies, use_container_width=True, hide_index=True)
-
-with st.expander("每50期开奖校准历史", expanded=False):
-    if CALIBRATION_LOG_FILE.exists():
-        try:
-            calibration_history = pd.read_csv(CALIBRATION_LOG_FILE)
-            st.dataframe(calibration_history.iloc[::-1], use_container_width=True, hide_index=True)
-            st.download_button(
-                "下载模型校准历史 CSV",
-                data=calibration_history.to_csv(index=False).encode("utf-8-sig"),
-                file_name="canada28_calibration_history.csv",
-                mime="text/csv",
-            )
-        except Exception as exc:
-            st.warning(f"暂时无法读取校准历史：{exc}")
-    else:
-        st.caption("尚未完成第一轮50期开奖校准。")
 
 with st.expander("最近开奖记录", expanded=False):
     recent_draws = df.tail(30).iloc[::-1].copy()
@@ -2328,7 +1908,7 @@ st.download_button(
 
 st.caption(
     "数据来自 pc28.world，使用时请注明并链接 https://pc28.world。"
-    "本应用仅作数据统计与研究，不提供投注功能；每50期仅校准统计平滑参数，大小与单双分别采用九模型动态权重，不保证未来命中率提高。"
+    "本应用仅作三球六码/七码数据统计与研究，不提供投注功能；每球每累计50条已核对事前预测独立校准，不保证未来覆盖率提高。"
 )
 st.caption(
     "重要：Streamlit Cloud 本地文件可能在重启或重新部署后丢失；"
