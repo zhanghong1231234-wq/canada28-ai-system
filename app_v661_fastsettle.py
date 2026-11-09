@@ -2226,3 +2226,87 @@ if longest_rows:
 else:
     st.info("暂无已核对的连续命中纪录。")
 st.caption("历史连中、最近窗口命中率都不能可靠预测下一期是否命中；独立随机开奖不会因为之前连中或连错而改变概率。")
+
+# V6.6.1 add-on: fixed, consecutive 100-issue historical archives.
+# Read-only presentation of original pre-draw ledgers; never invent missing forecasts.
+def _archive_100_frame(ledger, history, start_issue, end_issue, digits_kind):
+    label = "六码" if digits_kind == "六码" else "七码"
+    cols = ["期号", "预测时间(北京)", "开奖时间(北京)", "实际开奖"]
+    for ball in ("A", "B", "C"):
+        cols.extend([f"{ball}球{label}", f"{ball}实际", f"{ball}核对"])
+    if ledger is None or ledger.empty or "目标期号" not in ledger.columns:
+        saved = pd.DataFrame()
+    else:
+        saved = ledger.copy()
+        saved["_issue"] = pd.to_numeric(saved["目标期号"], errors="coerce")
+        saved = saved.dropna(subset=["_issue"])
+        saved["_issue"] = saved["_issue"].astype(int)
+        saved = saved[(saved["_issue"] >= start_issue) & (saved["_issue"] <= end_issue)]
+        saved = saved.sort_values("_issue").drop_duplicates("_issue", keep="first").set_index("_issue")
+    draws = history.copy()
+    draws["_issue"] = pd.to_numeric(draws["期号"], errors="coerce")
+    draws = draws.dropna(subset=["_issue"])
+    draws["_issue"] = draws["_issue"].astype(int)
+    draws = draws[(draws["_issue"] >= start_issue) & (draws["_issue"] <= end_issue)]
+    draws = draws.drop_duplicates("_issue", keep="last").set_index("_issue")
+    output = []
+    for issue in range(start_issue, end_issue + 1):
+        pred = saved.loc[issue] if issue in saved.index else None
+        draw = draws.loc[issue] if issue in draws.index else None
+        row = {"期号": issue,
+               "预测时间(北京)": format_beijing_time(pred.get("预测时间")) if pred is not None else "未记录预测",
+               "开奖时间(北京)": format_beijing_time(draw.get("开奖时间")) if draw is not None else "未同步",
+               "实际开奖": (f"{int(draw['A'])}+{int(draw['B'])}+{int(draw['C'])}={int(draw['和值'])}"
+                            if draw is not None else "未同步")}
+        for ball in ("A", "B", "C"):
+            digits = str(pred.get(f"{ball}{label}", "")).strip() if pred is not None else ""
+            if digits.lower() in ("nan", "none"):
+                digits = ""
+            row[f"{ball}球{label}"] = digits if digits else "未记录预测"
+            row[f"{ball}实际"] = str(int(draw[ball])) if draw is not None else "—"
+            if not digits:
+                row[f"{ball}核对"] = "未记录预测"
+            elif draw is None:
+                row[f"{ball}核对"] = "等待开奖/同步"
+            elif len(digits) != (6 if label == "六码" else 7) or not digits.isdigit() or len(set(digits)) != len(digits):
+                row[f"{ball}核对"] = "预测格式异常"
+            else:
+                row[f"{ball}核对"] = "✅ 正确" if str(int(draw[ball])) in digits else "❌ 错误"
+        output.append(row)
+    return pd.DataFrame(output, columns=cols)
+
+
+st.header("📚 历史预测档案｜严格连续100期开奖期号一档")
+st.caption("按固定整百期号边界分档，例如3504500–3504599；六码和七码分别展示。仅使用事前保存的预测，不补造漏期记录。时间统一为北京时间。")
+archive_kind = st.radio("档案类型", ["六码", "七码"], horizontal=True, key="v661_archive_kind")
+archive_ledger = six_ledger if archive_kind == "六码" else seven_ledger
+archive_issues = (pd.to_numeric(archive_ledger["目标期号"], errors="coerce").dropna()
+                  if not archive_ledger.empty and "目标期号" in archive_ledger.columns else pd.Series(dtype=float))
+if archive_issues.empty:
+    st.info(f"目前没有已保存的{archive_kind}预测，无法生成事前预测档案。")
+else:
+    first_issue = int(archive_issues.min())
+    last_issue = max(int(df["期号"].max()), int(archive_issues.max()))
+    first_bucket = (first_issue // 100) * 100
+    last_bucket = (last_issue // 100) * 100
+    buckets = list(range(last_bucket, first_bucket - 1, -100))
+    chosen_bucket = st.selectbox("选择100期档案", buckets,
+        format_func=lambda x: f"第{x}–{x+99}期（{'当前档' if x == last_bucket else '历史档'}）",
+        key="v661_archive_bucket")
+    archive = _archive_100_frame(archive_ledger, df, chosen_bucket, chosen_bucket + 99, archive_kind)
+    st.caption(f"档案范围：{chosen_bucket}–{chosen_bucket+99}，固定100个期号；未开奖或未同步的期号不算已核对。")
+    metrics = []
+    for ball in ("A", "B", "C"):
+        results = archive[f"{ball}核对"]
+        checked = int(results.isin(["✅ 正确", "❌ 错误"]).sum())
+        hits = int((results == "✅ 正确").sum())
+        metrics.append({"球位": ball, "已核对": checked, "命中": hits,
+                        "命中率": f"{hits/checked:.1%}" if checked else "—",
+                        "未记录预测": int((results == "未记录预测").sum())})
+    st.dataframe(pd.DataFrame(metrics), hide_index=True, use_container_width=True)
+    st.dataframe(archive, hide_index=True, use_container_width=True, height=440)
+    st.download_button(f"下载{archive_kind}第{chosen_bucket}–{chosen_bucket+99}期档案 CSV",
+        archive.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"canada28_v661_{'six' if archive_kind == '六码' else 'seven'}_{chosen_bucket}_{chosen_bucket+99}.csv",
+        mime="text/csv", key="v661_archive_download")
+    st.caption("注：未同步开奖不等于确认未开奖；只有取得真实开奖且存在有效事前预测时才统计命中率。")
