@@ -1060,6 +1060,11 @@ def update_seven_digit_ledger(history, prediction):
     for col in V61_DIGIT_COLS:
         if col not in log.columns:
             log[col] = ""
+    # Normalize historic mixed actual-number fields to ordinary Python strings.
+    # Pandas Arrow string columns reject integer assignment even when CSV dtype=str.
+    for position in ("A", "B", "C"):
+        actual_col = f"{position}实际号码"
+        log[actual_col] = log[actual_col].astype("object")
     log["目标期号"] = pd.to_numeric(log["目标期号"], errors="coerce")
     latest = int(history["期号"].max())
     target = latest + 1
@@ -1091,7 +1096,7 @@ def update_seven_digit_ledger(history, prediction):
                 continue
             verdict = "正确" if str(actual) in seven else "错误"
             if str(record[f"{position}实际号码"]) != str(actual) or str(record[f"{position}是否命中"]) != verdict:
-                log.at[idx, f"{position}实际号码"] = actual
+                log.at[idx, f"{position}实际号码"] = str(actual)
                 log.at[idx, f"{position}是否命中"] = verdict
                 changed = True
     if changed:
@@ -1131,6 +1136,11 @@ def update_six_digit_ledger(history, predictions):
     for col in V64_SIX_COLS:
         if col not in log.columns:
             log[col] = ""
+    # Normalize historic mixed actual-number fields to ordinary Python strings.
+    # Pandas Arrow string columns reject integer assignment even when CSV dtype=str.
+    for position in ("A", "B", "C"):
+        actual_col = f"{position}实际号码"
+        log[actual_col] = log[actual_col].astype("object")
     log["目标期号"] = pd.to_numeric(log["目标期号"], errors="coerce")
     latest = int(history["期号"].max())
     target = latest + 1
@@ -1164,7 +1174,7 @@ def update_six_digit_ledger(history, predictions):
             actual = int(draw[pos])
             verdict = "正确" if str(actual) in digits else "错误"
             if str(record[f"{pos}实际号码"]) != str(actual) or str(record[f"{pos}是否命中"]) != verdict:
-                log.at[idx, f"{pos}实际号码"] = actual
+                log.at[idx, f"{pos}实际号码"] = str(actual)
                 log.at[idx, f"{pos}是否命中"] = verdict
                 changed = True
     if changed:
@@ -1647,6 +1657,9 @@ def settle_digit_ledgers_fast(draw_rows):
         for col in columns:
             if col not in ledger.columns:
                 ledger[col] = ""
+        for position in ("A", "B", "C"):
+            actual_col = f"{position}实际号码"
+            ledger[actual_col] = ledger[actual_col].astype("object")
         target_issues = pd.to_numeric(ledger["目标期号"], errors="coerce")
         changed = False
         for draw in draw_rows:
