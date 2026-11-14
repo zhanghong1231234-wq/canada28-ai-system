@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V7.7
+"""Canada28 Matrix AI V7.8
 七模块独立分析工具。仅作统计研究，不保证预测准确。
 """
 import os
@@ -183,7 +183,7 @@ def parse_beijing_time(value):
         return None
 
 st.set_page_config(
-    page_title="Canada28 Matrix AI V7.7",
+    page_title="Canada28 Matrix AI V7.8",
     page_icon="📊",
     layout="wide",
 )
@@ -193,7 +193,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.title("🔐 Canada28 Matrix AI V7.7")
+    st.title("🔐 Canada28 Matrix AI V7.8")
     st.subheader("请输入登录密码")
 
     password = st.text_input(
@@ -217,7 +217,7 @@ def check_password():
 
 if not check_password():
     st.stop()
-st.title("Canada28 Matrix AI V7.7｜全功能独立分析")
+st.title("Canada28 Matrix AI V7.8｜综合预测仪表盘")
 st.caption(
     "历史开奖数据驱动的三球与总和值统计研究。数据来自 pc28.world；"
     "统计概率不代表能够预测随机开奖结果，也不构成投注建议。"
@@ -474,7 +474,31 @@ def settle(state,history):
                 r.update(actual=a,status=verdict,draw_time=format_beijing_time(d['开奖时间']),number=x); changed=True
     return changed
 
-INIT_KEY='v770_initial_validation.json'
+INIT_KEY='v780_initial_validation.json'
+KILL='和值|杀组合'
+KILL_NAMES=NAMES+['固定杀大单','固定杀小双','等权历史融合']
+
+def kill_losses(models,x):
+    a=actual_label(x,28,'杀组合')
+    picks=[project(p,'杀组合')[0] for p in models]
+    picks += ['大单','小双',project(.5*models[0]+.5*models[1:].mean(axis=0),'杀组合')[0]]
+    return [int(p==a) for p in picks]
+
+def kill_weights(losses):
+    # Select on earlier observations, confirm once on later observations.
+    w=np.zeros(len(NAMES)); w[0]=1
+    a=np.asarray(losses,dtype=float)
+    if len(a)<40: return w,'固定杀小双（理论基准）'
+    mid=len(a)//2; train=a[:mid].mean(axis=0); confirm=a[mid:].mean(axis=0)
+    j=min(list(range(1,14))+[16],key=lambda j:train[j])
+    # Require at least 2 percentage points better than BOTH fixed baselines in both halves.
+    if train[j]+.02<=min(train[14:16]) and confirm[j]+.02<=min(confirm[14:16]):
+        w[:]=0
+        if j==16: w[0]=.5; w[1:]=.5/13
+        else: w[j]=1
+        return w,KILL_NAMES[j]
+    return w,'固定杀小双（理论基准）'
+
 
 def validation_loss(models,x,kind):
     # Proper event Brier for categories; coverage decisions use hit loss.
@@ -489,14 +513,15 @@ def initial_validation(history,half):
     # 120 chronological targets, sampled every 3 draws; train only on earlier data.
     indices=[i for i in range(max(120,len(arr)-360),len(arr),3) if issues[i]==issues[i-1]+1]
     if len(indices)<40: return None
-    scores={pos+'|'+kind:[] for pos,kind in SPECS}; fitted={}
+    scores={pos+'|'+kind:[] for pos,kind in SPECS}; fitted={}; kill_scores=[]
     for j,i in enumerate(indices):
         if j%20==0: fitted={}
         m=[candidates(arr[:i],c,half,fitted) for c in range(4)]
+        kill_scores.append(kill_losses(m[3],int(arr[i].sum())))
         for pos,kind in SPECS:
             c=('A','B','C','和值').index(pos); x=int(arr[i,c] if c<3 else arr[i].sum())
             scores[pos+'|'+kind].append(validation_loss(m[c],x,kind).tolist())
-    return {'version':1,'half':half,'last':int(issues[-1]),'history_n':len(arr),'n':len(indices),'scores':scores}
+    return {'version':1,'half':half,'last':int(issues[-1]),'history_n':len(arr),'n':len(indices),'scores':scores,'kill_scores':kill_scores}
 
 def initial_state(history,half):
     saved=json.loads(db_get(INIT_KEY) or '{}')
@@ -520,6 +545,9 @@ def weights_for(state,name,k,kind,initial):
     n=len(rows); cutoff=n//50*50; rows=rows[:cutoff][-300:]
     losses=[validation_loss(np.array(r['models']),r['number'],kind) for r in rows]
     if len(losses)<50: losses=initial.get('scores',{}).get(name,[])
+    if name==KILL:
+        kl=[kill_losses(np.asarray(r['models']),r['number']) for r in rows] if len(rows)>=50 else initial.get('kill_scores',[])
+        return kill_weights(kl)[0],n
     return choose_weights(losses),n
 
 def build_record(history,state,half,initial):
@@ -529,7 +557,7 @@ def build_record(history,state,half,initial):
         i=('A','B','C','和值').index(pos); m=models[i]; name=pos+'|'+kind; w,n=weights_for(state,name,m.shape[1],kind,initial); p=w@m
         pick,prob=project(p,kind)
         projects[name]={'pick':pick,'prob':prob,'p':p.tolist(),'models':m.tolist(),'weights':w.tolist(),'status':'等待开奖','calibrated':n//50*50}
-    return {'time':beijing_now().isoformat(),'base':int(history['期号'].max()),'projects':projects,'version':'V7.7','initial_n':initial.get('n',0)}
+    return {'time':beijing_now().isoformat(),'base':int(history['期号'].max()),'projects':projects,'version':'V7.8','initial_n':initial.get('n',0)}
 
 def streaks(rows):
     runs=[]; active=None
@@ -555,10 +583,10 @@ def display_status(frame):
 
 # UI and sync. No writes to legacy prediction artifacts.
 with st.sidebar:
-    st.header('版本导航'); module=st.radio('当前版本',list(MODULES)); visible=MODULES[module]; st.caption('全部13项同步锁定；导航仅切换显示。'); st.header('系统设置'); half=st.slider('半衰期',100,2000,500,50); auto=st.checkbox('自动同步',True); count=st.selectbox('首次同步',[1000,3000,5000],index=2)
+    st.header('综合仪表盘'); module='全部13项'; visible=SPECS; st.caption('全部13项同页显示、同步锁定。'); st.header('系统设置'); half=st.slider('半衰期',100,2000,500,50); auto=st.checkbox('自动同步',True); count=st.selectbox('首次同步',[1000,3000,5000],index=2)
 try:
     remote=db_init()
-    if not remote: st.error('V7.7 要求配置 DATABASE_URL，避免历史记录丢失。'); st.stop()
+    if not remote: st.error('V7.8 要求配置 DATABASE_URL，避免历史记录丢失。'); st.stop()
 except Exception as e:
     st.error('数据库连接失败：'+type(e).__name__); st.stop()
 if 'v700_history' not in st.session_state:
@@ -603,7 +631,7 @@ if initial:
     with st.expander('初始历史回测结果（非真实预测成绩）'):
         selected=st.selectbox('回测项目',[p+'|'+k for p,k in visible],key='v770_validation_project_'+module)
         a=np.array(initial['scores'][selected]); mid=len(a)//2
-        st.dataframe(pd.DataFrame({'模型':NAMES,'选择段损失':a[:mid].mean(axis=0),'确认段损失':a[mid:].mean(axis=0),'初始权重':choose_weights(a)}),hide_index=True)
+        st.dataframe(pd.DataFrame({'模型':NAMES,'选择段损失':a[:mid].mean(axis=0),'确认段损失':a[mid:].mean(axis=0),'初始权重':kill_weights(initial.get('kill_scores',[]))[0] if selected==KILL else choose_weights(a)}),hide_index=True)
 # Confirm latest source again before locking; do not backfill if source is unavailable.
 if target not in state:
     try:
@@ -622,6 +650,8 @@ st.header(f'下一期 {target}｜事前锁定预测')
 if target in state:
     rec=state[target]; st.caption('锁定版本：'+rec.get('version','V7.0')+'；旧预测不重新计算。')
     for pos,kind in visible:
+        if (pos,kind) in [v[0] for v in MODULES.values()]:
+            st.markdown('### '+next(label for label,specs in MODULES.items() if specs[0]==(pos,kind)))
         name=pos+'|'+kind; r=rec['projects'].get(name)
         st.subheader({'A':'第1球 A','B':'第2球 B','C':'第3球 C','和值':'总和值'}[pos]+'｜'+kind)
         if not r:
@@ -640,7 +670,7 @@ if target in state:
             st.caption(f"已校准预测数：{r.get('calibrated',0)}；距离下次50期校准：{50-n%50}期")
 else:
     st.info('本期尚未锁定，请等待最新开奖确认。')
-st.header(module+'｜历史成绩与连续错误登记')
+st.header('全部13项｜历史成绩与连续错误登记')
 allrows={}; summary=[]; runrows=[]
 for pos,kind in visible:
     name=pos+'|'+kind; rows={}
@@ -651,16 +681,37 @@ for pos,kind in visible:
     checked=[r for r in rows if r['状态'] in ('正确','错误')]; row={'项目':name,'已核对':len(checked),'命中率':sum(r['状态']=='正确' for r in checked)/len(checked) if checked else None}
     for status in ('正确','错误'):
         rr=[r for r in runs if r['结果']==status]; m=max([r['长度'] for r in rr],default=0); row['最高'+status]=m; row['最高'+status+'次数']=sum(r['长度']==m for r in rr)
-    for window in (50,100,200,500):
+    for window in (10,20,50,100,200,500):
         sample=checked[-window:]; row[f'近{window}期命中率']=sum(r['状态']=='正确' for r in sample)/len(sample) if sample else None; row[f'近{window}期样本']=len(sample)
     current=next((r for r in reversed(runs) if r['状态']=='当前'),None); row['当前连错']=current['长度'] if current and current['结果']=='错误' else 0; row['当前连中']=current['长度'] if current and current['结果']=='正确' else 0
     summary.append(row); runrows.extend([dict(r,项目=name) for r in runs])
 st.dataframe(pd.DataFrame(summary),hide_index=True)
+with st.expander('杀组合专项：真实成绩与固定基准对照',expanded=True):
+    checked=[r for r in allrows[KILL] if r['状态'] in ('正确','错误')]
+    comparisons=[]
+    for window in (10,20,50,100,200,500,len(checked)):
+        sample=checked[-window:] if window else []
+        if not sample: continue
+        n=len(sample)
+        comparisons.append({'范围': '全部' if window==len(checked) else f'近{window}期','样本':n,'实际成功率':sum(r['状态']=='正确' for r in sample)/n,'固定杀大单对照':sum(r['实际']!='大单' for r in sample)/n,'固定杀小双对照':sum(r['实际']!='小双' for r in sample)/n})
+    st.dataframe(pd.DataFrame(comparisons),hide_index=True)
+    st.caption('固定基准为同一批实际开奖的事后对照，不是已锁定预测。理论基准76.9%，不保证未来成绩。')
+    kl=np.asarray(initial.get('kill_scores',[]))
+    if len(kl):
+        mid=len(kl)//2; w,strategy=kill_weights(kl)
+        st.write('初始专项回测策略：'+strategy)
+        st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'选择段成功率':1-kl[:mid].mean(axis=0),'确认段成功率':1-kl[mid:].mean(axis=0)}),hide_index=True)
+    live=[r['projects'][KILL] for _,r in sorted(state.items(),key=lambda z:int(z[0])) if KILL in r['projects'] and r['projects'][KILL].get('status') in ('正确','错误') and 'models' in r['projects'][KILL] and 'number' in r['projects'][KILL]]
+    if live:
+        a=np.asarray([kill_losses(np.asarray(r['models']),r['number']) for r in live[-500:]])
+        st.caption(f'候选模型事前保存概率的对照成绩：{len(a)}期；不是实际锁定成绩。')
+        st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'对照成功率':1-a.mean(axis=0)}),hide_index=True)
+
 name=st.selectbox('历史项目',list(allrows),key='v770_history_'+module); rows=allrows[name]; runs=pd.DataFrame([r for r in runrows if r['项目']==name]); st.dataframe(display_status(runs),hide_index=True)
-if not runs.empty: st.dataframe(display_status(runs.groupby(['结果','长度','状态']).size().reset_index(name='出现次数')),hide_index=True)
-st.download_button('下载全部连中连错登记',pd.DataFrame(runrows).to_csv(index=False).encode('utf-8-sig'),'v770_streaks.csv','text/csv')
+if not runs.empty: st.dataframe(display_status(runs.groupby(['结果','长度']).size().reset_index(name='出现次数')),hide_index=True)
+st.download_button('下载全部连中连错登记',pd.DataFrame(runrows).to_csv(index=False).encode('utf-8-sig'),'v780_streaks.csv','text/csv')
 if rows:
     frame=pd.DataFrame(rows); buckets=sorted({r['期号']//100*100 for r in rows},reverse=True); bucket=st.selectbox('连续100期档案',buckets,format_func=lambda x:f'{x}–{x+99}')
     archive=frame.set_index('期号').reindex(range(bucket,bucket+100)).rename_axis('期号').reset_index(); archive['状态']=archive['状态'].fillna('未记录预测'); st.dataframe(display_status(archive),hide_index=True)
-    st.download_button('下载项目完整历史',frame.to_csv(index=False).encode('utf-8-sig'),'v770_history_project.csv','text/csv')
+    st.download_button('下载项目完整历史',frame.to_csv(index=False).encode('utf-8-sig'),'v780_history_project.csv','text/csv')
 st.caption('✅️ 正确　❌️ 错误　⏳ 等待开奖。历史成绩不代表未来命中率。网页运行期间才会自动同步；旧版记录只读。')
