@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V7.8.1
+"""Canada28 Matrix AI V8.0
 七模块独立分析工具。仅作统计研究，不保证预测准确。
 """
 import os
@@ -183,7 +183,7 @@ def parse_beijing_time(value):
         return None
 
 st.set_page_config(
-    page_title="Canada28 Matrix AI V7.8.1",
+    page_title="Canada28 Matrix AI V8.0",
     page_icon="📊",
     layout="wide",
 )
@@ -193,7 +193,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.title("🔐 Canada28 Matrix AI V7.8.1")
+    st.title("🔐 Canada28 Matrix AI V8.0")
     st.subheader("请输入登录密码")
 
     password = st.text_input(
@@ -217,7 +217,7 @@ def check_password():
 
 if not check_password():
     st.stop()
-st.title("Canada28 Matrix AI V7.8.1｜661经典布局全功能版")
+st.title("Canada28 Matrix AI V8.0｜661经典布局｜全模型AI融合版")
 st.caption(
     "历史开奖数据驱动的三球与总和值统计研究。数据来自 pc28.world；"
     "统计概率不代表能够预测随机开奖结果，也不构成投注建议。"
@@ -474,7 +474,7 @@ def settle(state,history):
                 r.update(actual=a,status=verdict,draw_time=format_beijing_time(d['开奖时间']),number=x); changed=True
     return changed
 
-INIT_KEY='v780_initial_validation.json'
+INIT_KEY='v800_initial_validation.json'
 KILL='和值|杀组合'
 KILL_NAMES=NAMES+['固定杀大单','固定杀小双','等权历史融合']
 
@@ -508,47 +508,76 @@ def validation_loss(models,x,kind):
     g,l=groups(k,kind); q=np.array([[p[ix].sum() for ix in g] for p in models]); y=np.array([v==a for v in l],dtype=float)
     return np.sum((q-y)**2,axis=1)
 
+WINDOWS=(50,100,200,500,1000)
+
+def fusion_weights(losses):
+    """All fourteen models participate in the candidate mixture; shrink toward theory."""
+    a=np.asarray(losses,dtype=float)
+    if len(a)<40:
+        w=np.zeros(14); w[0]=1; return w
+    avg=np.mean([a[-w:].mean(axis=0) for w in WINDOWS if len(a)>=w],axis=0) if len(a)>=50 else a.mean(axis=0)
+    raw=np.exp(-8*(avg-avg.min())); raw/=raw.sum()
+    raw=.95*raw+.05/14
+    raw*=.5; raw[0]+=.5
+    return raw
+
+def evaluate_fusion(samples,kind):
+    """Select weights on first half, confirm actual fused decisions on later half."""
+    base=np.zeros(14); base[0]=1
+    if len(samples)<40: return base, {'strategy':'理论基准','n':len(samples)}
+    mid=len(samples)//2
+    def losses(seq):
+        return [validation_loss(np.asarray(m),int(x),kind) for m,x in seq]
+    w=fusion_weights(losses(samples[:mid]))
+    def metrics(seq,weight):
+        hits=[]; errors=[]; fixed=[]
+        for m,x in seq:
+            m=np.asarray(m); p=weight@m; x=int(x); a=actual_label(x,len(p),kind)
+            hits.append(int(hit(project(p,kind)[0],a,kind)))
+            g,l=groups(len(p),kind); q=np.array([p[ix].sum() for ix in g]); y=np.array([v==a for v in l]); errors.append(float(np.sum((q-y)**2)))
+            fixed.append([int(a!='小双'),int(a!='大单')])
+        return float(np.mean(hits)),float(np.mean(errors)),np.mean(fixed,axis=0)
+    f=metrics(samples[mid:],w); t=metrics(samples[mid:],base)
+    train_f=metrics(samples[:mid],w); train_t=metrics(samples[:mid],base)
+    if kind=='杀组合':
+        ok=f[0]>=max(f[2])+.02 and train_f[0]>=max(train_f[2])+.02
+    else:
+        ok=f[0]>=t[0] and f[1]+.001<t[1] and train_f[1]<train_t[1]
+    return (w if ok else base), {'strategy':'14模型动态融合' if ok else '理论基准（融合未通过验证）','n':len(samples),'confirm_n':len(samples)-mid,'fusion_hit':f[0],'baseline_hit':t[0],'fusion_brier':f[1],'baseline_brier':t[1]}
+
 def initial_validation(history,half):
     arr=history[['A','B','C']].to_numpy(dtype=int); issues=history['期号'].to_numpy(dtype=int)
-    # 120 chronological targets, sampled every 3 draws; train only on earlier data.
-    indices=[i for i in range(max(120,len(arr)-360),len(arr),3) if issues[i]==issues[i-1]+1]
+    indices=[i for i in range(max(120,len(arr)-1000),len(arr)) if issues[i]==issues[i-1]+1]
     if len(indices)<40: return None
-    scores={pos+'|'+kind:[] for pos,kind in SPECS}; fitted={}; kill_scores=[]
+    scores={pos+'|'+kind:[] for pos,kind in SPECS}; samples={str(c):[] for c in range(4)}; fitted={}; kill_scores=[]
     for j,i in enumerate(indices):
-        if j%20==0: fitted={}
+        # ML refits every 50 targets; all predictions use only earlier draws.
+        if j%50==0: fitted={}
         m=[candidates(arr[:i],c,half,fitted) for c in range(4)]
         kill_scores.append(kill_losses(m[3],int(arr[i].sum())))
+        for c in range(4):
+            x=int(arr[i,c] if c<3 else arr[i].sum()); samples[str(c)].append([m[c].tolist(),x])
         for pos,kind in SPECS:
             c=('A','B','C','和值').index(pos); x=int(arr[i,c] if c<3 else arr[i].sum())
             scores[pos+'|'+kind].append(validation_loss(m[c],x,kind).tolist())
-    return {'version':1,'half':half,'last':int(issues[-1]),'history_n':len(arr),'n':len(indices),'scores':scores,'kill_scores':kill_scores}
+    decisions={}
+    for pos,kind in SPECS:
+        c=('A','B','C','和值').index(pos); w,report=evaluate_fusion(samples[str(c)],kind); decisions[pos+'|'+kind]={'weights':w.tolist(),**report}
+    return {'version':2,'half':half,'last':int(issues[-1]),'history_n':len(arr),'n':len(indices),'scores':scores,'kill_scores':kill_scores,'decisions':decisions}
 
 def initial_state(history,half):
     saved=json.loads(db_get(INIT_KEY) or '{}')
-    if saved.get('version')==1 and saved.get('half')==half and saved.get('n',0)>=40: return saved
+    if saved.get('version')==2 and saved.get('half')==half and saved.get('n',0)>=40: return saved
     result=initial_validation(history,half)
     if result: db_put(INIT_KEY,json.dumps(result,ensure_ascii=False))
     return result or {}
 
-def choose_weights(losses):
-    w=np.zeros(len(NAMES)); w[0]=1
-    if len(losses)<40: return w
-    a=np.asarray(losses); mid=len(a)//2; train=a[:mid].mean(axis=0); confirm=a[mid:].mean(axis=0)
-    # Select on first half; confirm on second half. Conservative margin, not proof.
-    eligible=[j for j in range(1,len(NAMES)) if train[j]+.005<train[0] and confirm[j]+.005<confirm[0]]
-    if eligible:
-        raw=np.exp(-8*(train[eligible]-min(train[eligible]))); raw/=raw.sum(); w[0]=.5; w[eligible]=.5*raw
-    return w
-
 def weights_for(state,name,k,kind,initial):
     rows=[r['projects'][name] for _,r in sorted(state.items(),key=lambda z:int(z[0])) if name in r['projects'] and r['projects'][name].get('status') in ('正确','错误')]
-    n=len(rows); cutoff=n//50*50; rows=rows[:cutoff][-300:]
-    losses=[validation_loss(np.array(r['models']),r['number'],kind) for r in rows]
-    if len(losses)<50: losses=initial.get('scores',{}).get(name,[])
-    if name==KILL:
-        kl=[kill_losses(np.asarray(r['models']),r['number']) for r in rows] if len(rows)>=50 else initial.get('kill_scores',[])
-        return kill_weights(kl)[0],n
-    return choose_weights(losses),n
+    n=len(rows); cutoff=n//50*50
+    samples=[[r['models'],r['number']] for r in rows[:cutoff][-1000:] if 'models' in r and 'number' in r]
+    if len(samples)>=50: return evaluate_fusion(samples,kind)[0],n
+    return np.asarray(initial.get('decisions',{}).get(name,{}).get('weights',[1]+[0]*13)),n
 
 def build_record(history,state,half,initial):
     arr=history[['A','B','C']].to_numpy(dtype=int); models=[candidates(arr,i,half) for i in range(4)]
@@ -557,7 +586,7 @@ def build_record(history,state,half,initial):
         i=('A','B','C','和值').index(pos); m=models[i]; name=pos+'|'+kind; w,n=weights_for(state,name,m.shape[1],kind,initial); p=w@m
         pick,prob=project(p,kind)
         projects[name]={'pick':pick,'prob':prob,'p':p.tolist(),'models':m.tolist(),'weights':w.tolist(),'status':'等待开奖','calibrated':n//50*50}
-    return {'time':beijing_now().isoformat(),'base':int(history['期号'].max()),'projects':projects,'version':'V7.8.1','initial_n':initial.get('n',0)}
+    return {'time':beijing_now().isoformat(),'base':int(history['期号'].max()),'projects':projects,'version':'V8.0','initial_n':initial.get('n',0)}
 
 def streaks(rows):
     runs=[]; active=None
@@ -586,7 +615,7 @@ with st.sidebar:
     st.header('综合仪表盘'); module='全部13项'; visible=SPECS; st.caption('全部13项同页显示、同步锁定。'); st.header('系统设置'); half=st.slider('半衰期',100,2000,500,50); auto=st.checkbox('自动同步',True); count=st.selectbox('首次同步',[1000,3000,5000],index=2)
 try:
     remote=db_init()
-    if not remote: st.error('V7.8.1 要求配置 DATABASE_URL，避免历史记录丢失。'); st.stop()
+    if not remote: st.error('V8.0 要求配置 DATABASE_URL，避免历史记录丢失。'); st.stop()
 except Exception as e:
     st.error('数据库连接失败：'+type(e).__name__); st.stop()
 if 'v700_history' not in st.session_state:
@@ -626,12 +655,14 @@ try:
         initial=initial_state(h,half)
 except Exception as e:
     st.warning('历史初始化失败，暂用理论基准：'+type(e).__name__)
-st.caption(f"历史开奖：{len(h)}期；初始回测：{initial.get('n',0)}个抽样目标；训练截止：{initial.get('last','未完成')}")
+st.caption(f"历史开奖：{len(h)}期；初始回测：{initial.get('n',0)}个逐期目标；训练截止：{initial.get('last','未完成')}")
 if initial:
     with st.expander('初始历史回测结果（非真实预测成绩）'):
         selected=st.selectbox('回测项目',[p+'|'+k for p,k in visible],key='v770_validation_project_'+module)
         a=np.array(initial['scores'][selected]); mid=len(a)//2
-        st.dataframe(pd.DataFrame({'模型':NAMES,'选择段损失':a[:mid].mean(axis=0),'确认段损失':a[mid:].mean(axis=0),'初始权重':kill_weights(initial.get('kill_scores',[]))[0] if selected==KILL else choose_weights(a)}),hide_index=True)
+        st.dataframe(pd.DataFrame({'模型':NAMES,'选择段损失':a[:mid].mean(axis=0),'确认段损失':a[mid:].mean(axis=0),'初始权重':initial['decisions'][selected]['weights']}),hide_index=True)
+        st.write(initial['decisions'][selected])
+        st.dataframe(pd.DataFrame([{'窗口':w,'模型':name,'样本':min(w,len(a)),'平均损失':float(a[-w:,j].mean())} for w in WINDOWS for j,name in enumerate(NAMES)]),hide_index=True)
 # Confirm latest source again before locking; do not backfill if source is unavailable.
 if target not in state:
     try:
@@ -656,7 +687,7 @@ for pos,kind in visible:
     checked=[r for r in rows if r['状态'] in ('正确','错误')]; row={'项目':name,'已核对':len(checked),'命中率':sum(r['状态']=='正确' for r in checked)/len(checked) if checked else None}
     for status in ('正确','错误'):
         rr=[r for r in runs if r['结果']==status]; m=max([r['长度'] for r in rr],default=0); row['最高'+status]=m; row['最高'+status+'次数']=sum(r['长度']==m for r in rr)
-    for window in (10,20,50,100,200,500):
+    for window in (10,20,50,100,200,500,1000):
         sample=checked[-window:]; row[f'近{window}期命中率']=sum(r['状态']=='正确' for r in sample)/len(sample) if sample else None; row[f'近{window}期样本']=len(sample)
     current=next((r for r in reversed(runs) if r['状态']=='当前'),None); row['当前连错']=current['长度'] if current and current['结果']=='错误' else 0; row['当前连中']=current['长度'] if current and current['结果']=='正确' else 0
     summary.append(row); runrows.extend([dict(r,项目=name) for r in runs])
@@ -718,14 +749,14 @@ def show_module(label,specs):
         return pd.DataFrame(result)
     if recent: st.dataframe(combined(recent),hide_index=True)
     else: st.info('暂无事前预测记录。')
-    with st.expander('最近10/20/50/100/200/500期走势'):
-        st.dataframe(pd.DataFrame([{'项目':r['项目'],'窗口':w,'样本':r[f'近{w}期样本'],'命中率':pct(r[f'近{w}期命中率'])} for r in ss for w in (10,20,50,100,200,500)]),hide_index=True)
+    with st.expander('最近10/20/50/100/200/500/1000期走势'):
+        st.dataframe(pd.DataFrame([{'项目':r['项目'],'窗口':w,'样本':r[f'近{w}期样本'],'命中率':pct(r[f'近{w}期命中率'])} for r in ss for w in (10,20,50,100,200,500,1000)]),hide_index=True)
     with st.expander('全部连中连错登记与起止期号'):
         runs=pd.DataFrame([r for r in runrows if r['项目'] in names])
         if not runs.empty:
             st.dataframe(display_status(runs.groupby(['项目','结果','长度']).size().reset_index(name='出现次数')),hide_index=True)
             st.dataframe(display_status(runs),hide_index=True)
-            st.download_button('下载连中连错CSV',runs.to_csv(index=False).encode('utf-8-sig'),'v781_'+label.split()[0]+'_streaks.csv','text/csv',key='runs_'+label)
+            st.download_button('下载连中连错CSV',runs.to_csv(index=False).encode('utf-8-sig'),'v800_'+label.split()[0]+'_streaks.csv','text/csv',key='runs_'+label)
         else: st.info('暂无已核对记录。')
     with st.expander('连续100期档案与完整历史下载'):
         issues=[r['期号'] for name in names for r in allrows[name]]
@@ -733,15 +764,15 @@ def show_module(label,specs):
             buckets=list(range(max(max(issues),latest)//100*100,min(issues)//100*100-1,-100))
             bucket=st.selectbox('选择100期档案',buckets,format_func=lambda x:f'{x}–{x+99}',key='bucket_'+label)
             archive=combined(range(bucket,bucket+100)); st.dataframe(archive,hide_index=True,height=440)
-            st.download_button('下载100期档案',archive.to_csv(index=False).encode('utf-8-sig'),f'v781_{bucket}_{label.split()[0]}.csv','text/csv',key='archive_'+label)
+            st.download_button('下载100期档案',archive.to_csv(index=False).encode('utf-8-sig'),f'v800_{bucket}_{label.split()[0]}.csv','text/csv',key='archive_'+label)
             full=pd.DataFrame([dict(r,项目=name) for name in names for r in allrows[name]])
-            st.download_button('下载完整历史（含锁定概率和权重）',full.to_csv(index=False).encode('utf-8-sig'),'v781_'+label.split()[0]+'_history.csv','text/csv',key='history_'+label)
+            st.download_button('下载完整历史（含锁定概率和权重）',full.to_csv(index=False).encode('utf-8-sig'),'v800_'+label.split()[0]+'_history.csv','text/csv',key='history_'+label)
         else: st.info('暂无历史档案。')
     if specs[0][1]=='杀组合':
         with st.expander('杀组合专项：真实成绩与固定基准对照',expanded=True):
             checked=[r for r in allrows[KILL] if r['状态'] in ('正确','错误')]
             comparisons=[]
-            for window in (10,20,50,100,200,500,len(checked)):
+            for window in (10,20,50,100,200,500,1000,len(checked)):
                 sample=checked[-window:] if window else []
                 if not sample: continue
                 n=len(sample)
@@ -750,7 +781,7 @@ def show_module(label,specs):
             st.caption('固定基准为同一批实际开奖的事后对照，不是已锁定预测。理论基准76.9%，不保证未来成绩。')
             kl=np.asarray(initial.get('kill_scores',[]))
             if len(kl):
-                mid=len(kl)//2; w,strategy=kill_weights(kl)
+                mid=len(kl)//2; strategy=initial.get('decisions',{}).get(KILL,{}).get('strategy','理论基准')
                 st.write('初始专项回测策略：'+strategy)
                 st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'选择段成功率':1-kl[:mid].mean(axis=0),'确认段成功率':1-kl[mid:].mean(axis=0)}),hide_index=True)
             live=[r['projects'][KILL] for _,r in sorted(state.items(),key=lambda z:int(z[0])) if KILL in r['projects'] and r['projects'][KILL].get('status') in ('正确','错误') and 'models' in r['projects'][KILL] and 'number' in r['projects'][KILL]]
