@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Canada28 Matrix AI V7.8
+"""Canada28 Matrix AI V7.8.1
 七模块独立分析工具。仅作统计研究，不保证预测准确。
 """
 import os
@@ -183,7 +183,7 @@ def parse_beijing_time(value):
         return None
 
 st.set_page_config(
-    page_title="Canada28 Matrix AI V7.8",
+    page_title="Canada28 Matrix AI V7.8.1",
     page_icon="📊",
     layout="wide",
 )
@@ -193,7 +193,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return True
 
-    st.title("🔐 Canada28 Matrix AI V7.8")
+    st.title("🔐 Canada28 Matrix AI V7.8.1")
     st.subheader("请输入登录密码")
 
     password = st.text_input(
@@ -217,7 +217,7 @@ def check_password():
 
 if not check_password():
     st.stop()
-st.title("Canada28 Matrix AI V7.8｜综合预测仪表盘")
+st.title("Canada28 Matrix AI V7.8.1｜661经典布局全功能版")
 st.caption(
     "历史开奖数据驱动的三球与总和值统计研究。数据来自 pc28.world；"
     "统计概率不代表能够预测随机开奖结果，也不构成投注建议。"
@@ -557,7 +557,7 @@ def build_record(history,state,half,initial):
         i=('A','B','C','和值').index(pos); m=models[i]; name=pos+'|'+kind; w,n=weights_for(state,name,m.shape[1],kind,initial); p=w@m
         pick,prob=project(p,kind)
         projects[name]={'pick':pick,'prob':prob,'p':p.tolist(),'models':m.tolist(),'weights':w.tolist(),'status':'等待开奖','calibrated':n//50*50}
-    return {'time':beijing_now().isoformat(),'base':int(history['期号'].max()),'projects':projects,'version':'V7.8','initial_n':initial.get('n',0)}
+    return {'time':beijing_now().isoformat(),'base':int(history['期号'].max()),'projects':projects,'version':'V7.8.1','initial_n':initial.get('n',0)}
 
 def streaks(rows):
     runs=[]; active=None
@@ -586,7 +586,7 @@ with st.sidebar:
     st.header('综合仪表盘'); module='全部13项'; visible=SPECS; st.caption('全部13项同页显示、同步锁定。'); st.header('系统设置'); half=st.slider('半衰期',100,2000,500,50); auto=st.checkbox('自动同步',True); count=st.selectbox('首次同步',[1000,3000,5000],index=2)
 try:
     remote=db_init()
-    if not remote: st.error('V7.8 要求配置 DATABASE_URL，避免历史记录丢失。'); st.stop()
+    if not remote: st.error('V7.8.1 要求配置 DATABASE_URL，避免历史记录丢失。'); st.stop()
 except Exception as e:
     st.error('数据库连接失败：'+type(e).__name__); st.stop()
 if 'v700_history' not in st.session_state:
@@ -646,31 +646,6 @@ if target not in state:
                     record['time']=beijing_now().isoformat(); s[target]=record; return True
                 state=transact(lock)
     except Exception as e: st.error('模型计算或锁定失败：'+type(e).__name__)
-st.header(f'下一期 {target}｜事前锁定预测')
-if target in state:
-    rec=state[target]; st.caption('锁定版本：'+rec.get('version','V7.0')+'；旧预测不重新计算。')
-    for pos,kind in visible:
-        if (pos,kind) in [v[0] for v in MODULES.values()]:
-            st.markdown('### '+next(label for label,specs in MODULES.items() if specs[0]==(pos,kind)))
-        name=pos+'|'+kind; r=rec['projects'].get(name)
-        st.subheader({'A':'第1球 A','B':'第2球 B','C':'第3球 C','和值':'总和值'}[pos]+'｜'+kind)
-        if not r:
-            st.info('本期在旧版已锁定，本项目未记录；从下一次新锁定开始。'); continue
-        g,labels=groups(len(r['p']),kind); p=np.asarray(r['p']); probs=[float(p[ix].sum()) for ix in g]
-        cols=st.columns(len(labels))
-        for col,label,q in zip(cols,labels,probs): col.metric(label,f'{q:.2%}')
-        st.metric('锁定排除组合' if kind=='杀组合' else '锁定方向',r['pick'])
-        if sum(abs(q-(min(probs) if kind=='杀组合' else max(probs)))<1e-12 for q in probs)>1: st.caption('概率并列：按固定顺序选择，不代表额外优势。')
-        st.caption(('估计排除成功率：' if kind=='杀组合' else '锁定方向概率：')+f"{r['prob']:.2%}")
-        if kind=='杀组合': st.caption('公平独立数字模型最佳固定排除基准：76.9%；实际组合不等于排除组合即为正确。')
-        with st.expander('查看模型权重与数字概率'):
-            st.dataframe(pd.DataFrame({'模型':NAMES,'权重':r['weights']}),hide_index=True)
-            st.bar_chart(pd.DataFrame({'概率':r['p']}))
-            n=sum(1 for rec0 in state.values() if rec0['projects'].get(name,{}).get('status') in ('正确','错误'))
-            st.caption(f"已校准预测数：{r.get('calibrated',0)}；距离下次50期校准：{50-n%50}期")
-else:
-    st.info('本期尚未锁定，请等待最新开奖确认。')
-st.header('全部13项｜历史成绩与连续错误登记')
 allrows={}; summary=[]; runrows=[]
 for pos,kind in visible:
     name=pos+'|'+kind; rows={}
@@ -685,33 +660,106 @@ for pos,kind in visible:
         sample=checked[-window:]; row[f'近{window}期命中率']=sum(r['状态']=='正确' for r in sample)/len(sample) if sample else None; row[f'近{window}期样本']=len(sample)
     current=next((r for r in reversed(runs) if r['状态']=='当前'),None); row['当前连错']=current['长度'] if current and current['结果']=='错误' else 0; row['当前连中']=current['长度'] if current and current['结果']=='正确' else 0
     summary.append(row); runrows.extend([dict(r,项目=name) for r in runs])
-st.dataframe(pd.DataFrame(summary),hide_index=True)
-with st.expander('杀组合专项：真实成绩与固定基准对照',expanded=True):
-    checked=[r for r in allrows[KILL] if r['状态'] in ('正确','错误')]
-    comparisons=[]
-    for window in (10,20,50,100,200,500,len(checked)):
-        sample=checked[-window:] if window else []
-        if not sample: continue
-        n=len(sample)
-        comparisons.append({'范围': '全部' if window==len(checked) else f'近{window}期','样本':n,'实际成功率':sum(r['状态']=='正确' for r in sample)/n,'固定杀大单对照':sum(r['实际']!='大单' for r in sample)/n,'固定杀小双对照':sum(r['实际']!='小双' for r in sample)/n})
-    st.dataframe(pd.DataFrame(comparisons),hide_index=True)
-    st.caption('固定基准为同一批实际开奖的事后对照，不是已锁定预测。理论基准76.9%，不保证未来成绩。')
-    kl=np.asarray(initial.get('kill_scores',[]))
-    if len(kl):
-        mid=len(kl)//2; w,strategy=kill_weights(kl)
-        st.write('初始专项回测策略：'+strategy)
-        st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'选择段成功率':1-kl[:mid].mean(axis=0),'确认段成功率':1-kl[mid:].mean(axis=0)}),hide_index=True)
-    live=[r['projects'][KILL] for _,r in sorted(state.items(),key=lambda z:int(z[0])) if KILL in r['projects'] and r['projects'][KILL].get('status') in ('正确','错误') and 'models' in r['projects'][KILL] and 'number' in r['projects'][KILL]]
-    if live:
-        a=np.asarray([kill_losses(np.asarray(r['models']),r['number']) for r in live[-500:]])
-        st.caption(f'候选模型事前保存概率的对照成绩：{len(a)}期；不是实际锁定成绩。')
-        st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'对照成功率':1-a.mean(axis=0)}),hide_index=True)
+st.header(f'下一期 {target}｜事前锁定预测')
+rec=state.get(target)
+if rec:
+    st.caption('锁定版本：'+rec.get('version','V7.0')+'；旧预测不重新计算。')
+else:
+    st.info('本期尚未锁定，请等待最新开奖确认。')
+st.caption('持久化存储：PostgreSQL 已连接｜所有13项同步锁定；以下分区仅用于展示。')
 
-name=st.selectbox('历史项目',list(allrows),key='v770_history_'+module); rows=allrows[name]; runs=pd.DataFrame([r for r in runrows if r['项目']==name]); st.dataframe(display_status(runs),hide_index=True)
-if not runs.empty: st.dataframe(display_status(runs.groupby(['结果','长度']).size().reset_index(name='出现次数')),hide_index=True)
-st.download_button('下载全部连中连错登记',pd.DataFrame(runrows).to_csv(index=False).encode('utf-8-sig'),'v780_streaks.csv','text/csv')
-if rows:
-    frame=pd.DataFrame(rows); buckets=sorted({r['期号']//100*100 for r in rows},reverse=True); bucket=st.selectbox('连续100期档案',buckets,format_func=lambda x:f'{x}–{x+99}')
-    archive=frame.set_index('期号').reindex(range(bucket,bucket+100)).rename_axis('期号').reset_index(); archive['状态']=archive['状态'].fillna('未记录预测'); st.dataframe(display_status(archive),hide_index=True)
-    st.download_button('下载项目完整历史',frame.to_csv(index=False).encode('utf-8-sig'),'v780_history_project.csv','text/csv')
+def pct(v):
+    return '—' if v is None or pd.isna(v) else f'{v:.2%}'
+
+def show_module(label,specs):
+    st.divider()
+    st.subheader(label)
+    names=[pos+'|'+kind for pos,kind in specs]
+    cols=st.columns(len(specs))
+    for col,(pos,kind),name in zip(cols,specs,names):
+        with col:
+            st.markdown('#### '+({'A':'第1球 A','B':'第2球 B','C':'第3球 C','和值':'总和值'}[pos]))
+            r=rec.get('projects',{}).get(name) if rec else None
+            if not r:
+                st.info('本期未记录预测')
+                continue
+            st.metric('锁定排除组合' if kind=='杀组合' else '锁定方向',r['pick'],pct(r['prob']),delta_color='off')
+            g,labels=groups(len(r['p']),kind); p=np.asarray(r['p']); probs=[float(p[ix].sum()) for ix in g]
+            st.caption(' ｜ '.join(f'{a} {b:.2%}' for a,b in zip(labels,probs)))
+            if sum(abs(q-(min(probs) if kind=='杀组合' else max(probs)))<1e-12 for q in probs)>1:
+                st.caption('概率并列：固定顺序选择，无额外优势。')
+            with st.expander('锁定模型权重与数字概率'):
+                st.dataframe(pd.DataFrame({'模型':NAMES,'权重':r['weights']}),hide_index=True)
+                st.bar_chart(pd.DataFrame({'概率':r['p']}))
+    if specs[0][1]=='杀组合':
+        st.caption('理论最佳固定排除基准76.9%；实际组合不等于排除组合即正确。')
+    ss=[r for r in summary if r['项目'] in names]
+    st.markdown('**实际成绩与连中连错**')
+    scores=[]; calibration=[]
+    for row in ss:
+        name=row['项目']; n=row['已核对']; checked=[r for r in allrows[name] if r['状态'] in ('正确','错误')]; hits=sum(r['状态']=='正确' for r in checked)
+        scores.append({'项目':name,'已核对':n,'正确':hits,'错误':n-hits,'命中率':pct(row['命中率']),'当前连中':row['当前连中'],'当前连错':row['当前连错'],'最高连中':row['最高正确'],'最高连错':row['最高错误'],'最高连错次数':row['最高错误次数']})
+        calibration.append({'项目':name,'已核对':n,'累计满50期批次':n//50,'距离下一批':50-n%50})
+    st.dataframe(pd.DataFrame(scores),hide_index=True)
+    with st.expander('独立校准状态'):
+        st.dataframe(pd.DataFrame(calibration),hide_index=True)
+        st.caption('批次按已核对预测计数；锁定时实际采用的权重见各项目模型明细。')
+    st.markdown('**最近预测记录与开奖核对**')
+    recent=sorted({r['期号'] for name in names for r in allrows[name]},reverse=True)[:20]
+    maps={name:{r['期号']:r for r in allrows[name]} for name in names}
+    def combined(issues):
+        result=[]
+        for issue in issues:
+            row={'期号':issue}
+            for name in names:
+                prefix=name.split('|')[0]; r=maps[name].get(issue,{})
+                row[prefix+'预测']=r.get('预测',''); row[prefix+'实际']=r.get('实际',''); row[prefix+'核对']={'正确':'✅️','错误':'❌️','等待开奖':'⏳ 等待开奖'}.get(r.get('状态'),'未记录预测')
+            result.append(row)
+        return pd.DataFrame(result)
+    if recent: st.dataframe(combined(recent),hide_index=True)
+    else: st.info('暂无事前预测记录。')
+    with st.expander('最近10/20/50/100/200/500期走势'):
+        st.dataframe(pd.DataFrame([{'项目':r['项目'],'窗口':w,'样本':r[f'近{w}期样本'],'命中率':pct(r[f'近{w}期命中率'])} for r in ss for w in (10,20,50,100,200,500)]),hide_index=True)
+    with st.expander('全部连中连错登记与起止期号'):
+        runs=pd.DataFrame([r for r in runrows if r['项目'] in names])
+        if not runs.empty:
+            st.dataframe(display_status(runs.groupby(['项目','结果','长度']).size().reset_index(name='出现次数')),hide_index=True)
+            st.dataframe(display_status(runs),hide_index=True)
+            st.download_button('下载连中连错CSV',runs.to_csv(index=False).encode('utf-8-sig'),'v781_'+label.split()[0]+'_streaks.csv','text/csv',key='runs_'+label)
+        else: st.info('暂无已核对记录。')
+    with st.expander('连续100期档案与完整历史下载'):
+        issues=[r['期号'] for name in names for r in allrows[name]]
+        if issues:
+            buckets=list(range(max(max(issues),latest)//100*100,min(issues)//100*100-1,-100))
+            bucket=st.selectbox('选择100期档案',buckets,format_func=lambda x:f'{x}–{x+99}',key='bucket_'+label)
+            archive=combined(range(bucket,bucket+100)); st.dataframe(archive,hide_index=True,height=440)
+            st.download_button('下载100期档案',archive.to_csv(index=False).encode('utf-8-sig'),f'v781_{bucket}_{label.split()[0]}.csv','text/csv',key='archive_'+label)
+            full=pd.DataFrame([dict(r,项目=name) for name in names for r in allrows[name]])
+            st.download_button('下载完整历史（含锁定概率和权重）',full.to_csv(index=False).encode('utf-8-sig'),'v781_'+label.split()[0]+'_history.csv','text/csv',key='history_'+label)
+        else: st.info('暂无历史档案。')
+    if specs[0][1]=='杀组合':
+        with st.expander('杀组合专项：真实成绩与固定基准对照',expanded=True):
+            checked=[r for r in allrows[KILL] if r['状态'] in ('正确','错误')]
+            comparisons=[]
+            for window in (10,20,50,100,200,500,len(checked)):
+                sample=checked[-window:] if window else []
+                if not sample: continue
+                n=len(sample)
+                comparisons.append({'范围': '全部' if window==len(checked) else f'近{window}期','样本':n,'实际成功率':sum(r['状态']=='正确' for r in sample)/n,'固定杀大单对照':sum(r['实际']!='大单' for r in sample)/n,'固定杀小双对照':sum(r['实际']!='小双' for r in sample)/n})
+            st.dataframe(pd.DataFrame(comparisons),hide_index=True)
+            st.caption('固定基准为同一批实际开奖的事后对照，不是已锁定预测。理论基准76.9%，不保证未来成绩。')
+            kl=np.asarray(initial.get('kill_scores',[]))
+            if len(kl):
+                mid=len(kl)//2; w,strategy=kill_weights(kl)
+                st.write('初始专项回测策略：'+strategy)
+                st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'选择段成功率':1-kl[:mid].mean(axis=0),'确认段成功率':1-kl[mid:].mean(axis=0)}),hide_index=True)
+            live=[r['projects'][KILL] for _,r in sorted(state.items(),key=lambda z:int(z[0])) if KILL in r['projects'] and r['projects'][KILL].get('status') in ('正确','错误') and 'models' in r['projects'][KILL] and 'number' in r['projects'][KILL]]
+            if live:
+                a=np.asarray([kill_losses(np.asarray(r['models']),r['number']) for r in live[-500:]])
+                st.caption(f'候选模型事前保存概率的对照成绩：{len(a)}期；不是实际锁定成绩。')
+                st.dataframe(pd.DataFrame({'策略':KILL_NAMES,'对照成功率':1-a.mean(axis=0)}),hide_index=True)
+
+for label,specs in MODULES.items():
+    show_module(label,specs)
+st.divider()
 st.caption('✅️ 正确　❌️ 错误　⏳ 等待开奖。历史成绩不代表未来命中率。网页运行期间才会自动同步；旧版记录只读。')
