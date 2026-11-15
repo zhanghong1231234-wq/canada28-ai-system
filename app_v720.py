@@ -6,8 +6,8 @@ import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-st.set_page_config(page_title='Canada28 Matrix AI V7.3',layout='wide')
-st.title('Canada28 Matrix AI V7.3')
+st.set_page_config(page_title='Canada28 Matrix AI V7.4',layout='wide')
+st.title('Canada28 Matrix AI V7.4')
 st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。')
 TZ=timezone(timedelta(hours=8)); BASE='https://pc28.world/api/v1'
 URL=os.getenv('DATABASE_URL','')
@@ -140,7 +140,6 @@ with st.sidebar:
     if upload and st.button('导入 CSV'):save(parse(pd.read_csv(upload).to_dict('records')))
     source=st.radio('统计来源',['历史逐期回测','在线预测'])
     window=st.selectbox('统计区间',[20,50,100,500,1000,5000,'全部'],index=6)
-    ball=st.selectbox('球号',list('ABC'));task=st.selectbox('项目',TASKS)
 @st.fragment(run_every=5 if auto else None)
 def live():
     if auto:
@@ -175,7 +174,6 @@ def live():
     if saved is not None:pred=saved
     rec=back if source=='历史逐期回测' else online
     if window!='全部':rec=rec[-int(window):]
-    j=list('ABC').index(ball);k=TASKS.index(task);df=detail(rec,j,k)
     st.caption('已锁定在线预测' if saved is not None else '研究预览：尚未锁定在线预测')
     st.subheader('ABC 三球实时推演')
     for b in range(3):
@@ -199,21 +197,49 @@ def live():
             if y is not None:counts[sum(hit(p[b][k0]['pick'],y[b],k0) for b in range(3))]+=1
         rows.append([t,*counts])
     st.dataframe(pd.DataFrame(rows,columns=['项目','全错','中一球','中两球','全中']),hide_index=True)
-    st.subheader('历史预测与连胜连错')
-    st.caption(f'{source} · {ball}球 · {task}（左侧可调整查询条件）')
-    st.dataframe(df.iloc[::-1],hide_index=True)
-    a=stats(df);st.write(f'已核对 {a[0]}｜正确 {a[1]}｜错误 {a[2]}｜当前 {a[6]}｜最高连胜 {a[4]}｜最高连错 {a[5]}')
-    r=pd.DataFrame(runs(df),columns=['结果','开始','结束','长度']);st.caption('完整区段计数；区间边缘可能截断，缺期或等待开奖中断连续记录。')
-    if len(r):
-        st.dataframe(r.groupby(['长度','结果']).size().unstack(fill_value=0).reindex(columns=['✅','❌'],fill_value=0).rename(columns={'✅':'连胜次数','❌':'连错次数'}),use_container_width=True)
-        st.dataframe(r.sort_values('开始',ascending=False),hide_index=True)
-        errors=r[r['结果']=='❌'].sort_values('开始',ascending=False).reset_index(drop=True)
-        if len(errors):
-            selected=st.selectbox('查看任意一次历史连错',list(range(len(errors))),format_func=lambda i:f"{errors.iloc[i]['长度']}连错：{errors.iloc[i]['开始']}–{errors.iloc[i]['结束']}")
-            a=errors.iloc[selected];st.dataframe(df[df['期号'].between(a['开始'],a['结束'])],hide_index=True)
-    else:st.info('暂无已核对记录')
-    with st.expander('数学引擎 · 模型权重与回测'):
-        st.dataframe(pd.DataFrame({'公式':NAMES,'权重':w[j,k],'逐期回测命中率':mh[j,k]}),hide_index=True)
-        st.caption('公式特征经条件频率映射为数字概率；各任务按独立命中表现每50个有效回测目标更新权重。')
+    st.subheader('全部12项历史连胜连错统计')
+    st.caption('每段连续记录只计一次；缺期或等待开奖中断连续记录。统计区间边缘可能截断。')
+    details={(b,k):detail(rec,b,k) for b in range(3) for k in range(4)}
+    segments={key:pd.DataFrame(runs(df),columns=['结果','开始','结束','长度']) for key,df in details.items()}
+    for status,title in [('❌','历史连错次数'),('✅','历史连胜次数')]:
+        st.markdown(f'**{title}（全部球号及项目）**')
+        maxlen=max([int(r['长度'].max()) for r in segments.values() if not r.empty and (r['结果']==status).any() for r in [r[r['结果']==status]]] or [0])
+        rows=[]
+        for length in range(1,maxlen+1):
+            row={'连续期数':length}
+            for (b,k),r in segments.items():
+                row[f'{chr(65+b)}球{TASKS[k]}']=int(((r['结果']==status)&(r['长度']==length)).sum())
+            rows.append(row)
+        if rows:st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        else:st.info('暂无对应记录')
+    st.subheader('全部12项历史预测及连续记录明细')
+    for b in range(3):
+        st.markdown(f'### {chr(65+b)}球历史明细')
+        for k in range(4):
+            df=details[b,k];r=segments[b,k]
+            with st.container(border=True):
+                st.markdown(f'**{chr(65+b)}球 · {TASKS[k]}**')
+                a=stats(df)
+                st.caption(f'已核对 {a[0]}｜正确 {a[1]}｜错误 {a[2]}｜当前 {a[6]}｜最高连胜 {a[4]}｜最高连错 {a[5]}')
+                st.dataframe(df.iloc[::-1],hide_index=True,use_container_width=True,height=220)
+                st.markdown('连续记录（开始、结束期号）')
+                st.dataframe(r.sort_values('开始',ascending=False),hide_index=True,use_container_width=True,height=180)
+                with st.expander('查看每段连错的逐期预测详情'):
+                    errors=r[r['结果']=='❌'].sort_values('开始',ascending=False)
+                    pieces=[]
+                    for row in errors.to_dict('records'):
+                        part=df[df['期号'].between(row['开始'],row['结束'])].copy()
+                        part.insert(0,'连错段',f"{row['开始']}–{row['结束']}")
+                        part.insert(1,'连错长度',row['长度']);pieces.append(part)
+                    if pieces:st.dataframe(pd.concat(pieces,ignore_index=True),hide_index=True,use_container_width=True)
+                    else:st.info('暂无连错记录')
+    with st.expander('数学引擎 · 全部12项模型权重与回测'):
+        rows=[]
+        for b in range(3):
+            for k in range(4):
+                for m,name in enumerate(NAMES):
+                    rows.append({'球号':chr(65+b),'项目':TASKS[k],'公式':name,'权重':w[b,k,m],'逐期回测命中率':mh[b,k,m]})
+        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        st.caption('各任务按独立命中表现每50个有效回测目标更新权重。')
 
 live()
