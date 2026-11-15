@@ -6,8 +6,8 @@ import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-st.set_page_config(page_title='Canada28 Matrix AI V7.2',layout='wide')
-st.title('Canada28 Matrix AI V7.2')
+st.set_page_config(page_title='Canada28 Matrix AI V7.3',layout='wide')
+st.title('Canada28 Matrix AI V7.3')
 st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。')
 TZ=timezone(timedelta(hours=8)); BASE='https://pc28.world/api/v1'
 URL=os.getenv('DATABASE_URL','')
@@ -138,7 +138,6 @@ with st.sidebar:
         except Exception as e:st.error(str(e))
     upload=st.file_uploader('备用 CSV（issue,a,b,c,stamp）',type=['csv'])
     if upload and st.button('导入 CSV'):save(parse(pd.read_csv(upload).to_dict('records')))
-    page=st.radio('页面',['实时推演','历史预测','历史统计','连胜连错','数学引擎'])
     source=st.radio('统计来源',['历史逐期回测','在线预测'])
     window=st.selectbox('统计区间',[20,50,100,500,1000,5000,'全部'],index=6)
     ball=st.selectbox('球号',list('ABC'));task=st.selectbox('项目',TASKS)
@@ -177,38 +176,44 @@ def live():
     rec=back if source=='历史逐期回测' else online
     if window!='全部':rec=rec[-int(window):]
     j=list('ABC').index(ball);k=TASKS.index(task);df=detail(rec,j,k)
-    if page=='实时推演':
-        st.caption('已锁定在线预测' if saved is not None else '研究预览：尚未锁定在线预测')
-        for b,col in enumerate(st.columns(3)):
-            with col:
-                st.subheader(f'{chr(65+b)}球')
-                for k0,t in enumerate(TASKS):
-                    r=pred[b][k0];st.write(f'**{t}：{label(r["pick"],k0)}**');q=r['prob'];st.caption(f'模型覆盖概率 {q:.1%}' if k0<2 else f'{label(1,k0)} {q:.1%} / {label(0,k0)} {1-q:.1%}')
-    elif page=='历史预测':st.dataframe(df.iloc[::-1],hide_index=True)
-    elif page=='历史统计':
-        rows=[]
-        for b in range(3):
+    st.caption('已锁定在线预测' if saved is not None else '研究预览：尚未锁定在线预测')
+    st.subheader('ABC 三球实时推演')
+    for b in range(3):
+        with st.container(border=True):
+            st.subheader(f'{chr(65+b)}球 · 综合推演')
+            for k0,col in enumerate(st.columns(4)):
+                with col:
+                    r=pred[b][k0];q=r['prob']
+                    st.markdown(f'**{TASKS[k0]}：{label(r["pick"],k0)}**')
+                    st.caption(f'模型覆盖概率 {q:.1%}' if k0<2 else f'{label(1,k0)} {q:.1%} / {label(0,k0)} {1-q:.1%}')
+            rows=[]
             for k0,t in enumerate(TASKS):
-                a=stats(detail(rec,b,k0));rows.append([chr(65+b),t,*a[:3],f'{a[3]:.1%}' if a[0] else '—',a[4],a[5],a[6]])
-        st.dataframe(pd.DataFrame(rows,columns=['球','项目','已核对','正确','错误','命中率','最高连胜','最高连错','当前']),hide_index=True)
-        st.subheader('三球联合命中')
-        rows=[]
-        for k0,t in enumerate(TASKS):
-            counts=[0]*4
-            for i,p,y in rec:
-                if y is not None:counts[sum(hit(p[b][k0]['pick'],y[b],k0) for b in range(3))]+=1
-            rows.append([t,*counts])
-        st.dataframe(pd.DataFrame(rows,columns=['项目','全错','中一球','中两球','全中']),hide_index=True)
-    elif page=='连胜连错':
-        a=stats(df);st.write(f'已核对 {a[0]}｜正确 {a[1]}｜错误 {a[2]}｜当前 {a[6]}｜最高连胜 {a[4]}｜最高连错 {a[5]}')
-        r=pd.DataFrame(runs(df),columns=['结果','开始','结束','长度']);st.caption('完整区段计数；区间边缘可能截断，缺期或等待开奖中断连续记录。')
-        if len(r):
-            st.dataframe(r.groupby(['长度','结果']).size().unstack(fill_value=0),use_container_width=True)
-            st.dataframe(r.sort_values('开始',ascending=False),hide_index=True)
-            for a in r[r['结果']=='❌'].sort_values('开始',ascending=False).head(100).to_dict('records'):
-                with st.expander(f"{a['长度']}连错：{a['开始']}–{a['结束']}"):st.dataframe(df[df['期号'].between(a['开始'],a['结束'])],hide_index=True)
-        else:st.info('暂无已核对记录')
-    else:
+                a=stats(detail(rec,b,k0));rows.append([t,*a[:3],f'{a[3]:.1%}' if a[0] else '—',a[4],a[5],a[6]])
+            st.caption(f'{source} · 最近{window}期' if window!='全部' else f'{source} · 全部可用记录')
+            st.dataframe(pd.DataFrame(rows,columns=['项目','已核对','正确','错误','命中率','最高连胜','最高连错','当前']),hide_index=True)
+    st.subheader('三球联合命中')
+    rows=[]
+    for k0,t in enumerate(TASKS):
+        counts=[0]*4
+        for i,p,y in rec:
+            if y is not None:counts[sum(hit(p[b][k0]['pick'],y[b],k0) for b in range(3))]+=1
+        rows.append([t,*counts])
+    st.dataframe(pd.DataFrame(rows,columns=['项目','全错','中一球','中两球','全中']),hide_index=True)
+    st.subheader('历史预测与连胜连错')
+    st.caption(f'{source} · {ball}球 · {task}（左侧可调整查询条件）')
+    st.dataframe(df.iloc[::-1],hide_index=True)
+    a=stats(df);st.write(f'已核对 {a[0]}｜正确 {a[1]}｜错误 {a[2]}｜当前 {a[6]}｜最高连胜 {a[4]}｜最高连错 {a[5]}')
+    r=pd.DataFrame(runs(df),columns=['结果','开始','结束','长度']);st.caption('完整区段计数；区间边缘可能截断，缺期或等待开奖中断连续记录。')
+    if len(r):
+        st.dataframe(r.groupby(['长度','结果']).size().unstack(fill_value=0).reindex(columns=['✅','❌'],fill_value=0).rename(columns={'✅':'连胜次数','❌':'连错次数'}),use_container_width=True)
+        st.dataframe(r.sort_values('开始',ascending=False),hide_index=True)
+        errors=r[r['结果']=='❌'].sort_values('开始',ascending=False).reset_index(drop=True)
+        if len(errors):
+            selected=st.selectbox('查看任意一次历史连错',list(range(len(errors))),format_func=lambda i:f"{errors.iloc[i]['长度']}连错：{errors.iloc[i]['开始']}–{errors.iloc[i]['结束']}")
+            a=errors.iloc[selected];st.dataframe(df[df['期号'].between(a['开始'],a['结束'])],hide_index=True)
+    else:st.info('暂无已核对记录')
+    with st.expander('数学引擎 · 模型权重与回测'):
         st.dataframe(pd.DataFrame({'公式':NAMES,'权重':w[j,k],'逐期回测命中率':mh[j,k]}),hide_index=True)
         st.caption('公式特征经条件频率映射为数字概率；各任务按独立命中表现每50个有效回测目标更新权重。')
+
 live()
