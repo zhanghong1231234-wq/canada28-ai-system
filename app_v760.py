@@ -6,8 +6,8 @@ import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-st.set_page_config(page_title='Canada28 Matrix AI V7.5.1',layout='wide')
-st.title('Canada28 Matrix AI V7.5.1')
+st.set_page_config(page_title='Canada28 Matrix AI V7.6',layout='wide')
+st.title('Canada28 Matrix AI V7.6')
 st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。数据来自 [pc28.world](https://pc28.world)。')
 TZ=timezone(timedelta(hours=8)); BASE='https://pc28.world/api/v1'
 URL=os.getenv('DATABASE_URL','')
@@ -19,9 +19,7 @@ def db(url):
     with e.begin() as c:
         c.execute(text('CREATE TABLE IF NOT EXISTS v720_draws (issue BIGINT PRIMARY KEY, stamp TEXT, a INTEGER, b INTEGER, c INTEGER)'))
         c.execute(text('CREATE TABLE IF NOT EXISTS v720_predictions (issue BIGINT PRIMARY KEY, created TEXT, payload TEXT, actual TEXT)'))
-        c.execute(text('CREATE TABLE IF NOT EXISTS v750_back (issue BIGINT PRIMARY KEY, payload TEXT NOT NULL, actual TEXT NOT NULL)'))
-        c.execute(text('CREATE TABLE IF NOT EXISTS v750_live (issue BIGINT PRIMARY KEY, created TEXT, payload TEXT NOT NULL, actual TEXT)'))
-        c.execute(text('CREATE TABLE IF NOT EXISTS v750_state (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)'))
+        c.execute(text('CREATE TABLE IF NOT EXISTS v760_live (issue BIGINT PRIMARY KEY, created TEXT, payload TEXT NOT NULL, actual TEXT)'))
     return e
 E=db(URL)
 
@@ -145,35 +143,17 @@ def update_loss(loss,pack0,y):
 
 def initial():return np.zeros((M,3,10,10)),np.zeros((3,4,M)),np.full((3,4,M),1/M)
 
-def replay(d,progress=None):
-    # Checkpoint includes a fingerprint of the entire processed prefix. Rebuild if earlier history changes.
-    import hashlib
+@st.cache_data(show_spinner=False)
+def fit_counts(d):
+    # Fit conditional frequencies from observed draws only; no historical predictions.
     x=d[['a','b','c']].to_numpy(dtype=int); issues=d.issue.to_numpy(dtype=int)
-    def digest(t):return hashlib.sha256(np.column_stack((issues[:t],x[:t])).astype('<i8').tobytes()).hexdigest()
-    counts,loss,w=initial(); start=0
-    with E.connect() as c:r=c.execute(text('SELECT payload FROM v750_state WHERE id=1')).scalar()
-    if r:
-        a=json.loads(r);t=a['n']
-        if t<=len(x) and a['hash']==digest(t):
-            start=t;counts=np.array(a['counts']);loss=np.array(a['loss']);w=np.array(a['w'])
-    if start==0:
-        with E.begin() as c:c.execute(text('DELETE FROM v750_back'));c.execute(text('DELETE FROM v750_state'))
-    batch=[]
-    for t in range(start,len(x)):
-        p,av,f=model_probs(x[:t],counts,issues[:t]); y=x[t]
-        if t and issues[t]!=issues[t-1]+1:av=NEED==0
-        pp=pack(p,av,w);update_loss(loss,pp,y)
-        if (t+1)%50==0:w=weights(loss)
-        for m in np.flatnonzero(av):counts[m,np.arange(3),f[m],y]+=1
-        batch.append(dict(i=int(issues[t]),p=json.dumps(pp,separators=(',',':')),a=json.dumps(y.tolist())))
-        if len(batch)>=100 or t==len(x)-1:
-            state=json.dumps(dict(n=t+1,hash=digest(t+1),counts=counts.tolist(),loss=loss.tolist(),w=w.tolist()))
-            with E.begin() as c:
-                c.execute(text('INSERT INTO v750_back(issue,payload,actual) VALUES(:i,:p,:a) ON CONFLICT(issue) DO UPDATE SET payload=excluded.payload,actual=excluded.actual'),batch)
-                c.execute(text('INSERT INTO v750_state(id,payload) VALUES(1,:p) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload'),dict(p=state))
-            batch=[]
-            if progress:progress.progress((t+1)/len(x),text=f'历史逐期回测 {t+1}/{len(x)}')
-    return counts,w
+    counts=np.zeros((M,3,10,10))
+    for t in range(1,len(x)):
+        if issues[t]!=issues[t-1]+1:continue
+        z=x[max(0,t-3):t]; av=available(issues[max(0,t-3):t])
+        f=features(np.pad(z,((max(0,3-len(z)),0),(0,0))))
+        for m in np.flatnonzero(av):counts[m,np.arange(3),f[m],x[t]]+=1
+    return counts
 
 def load_records(table,limit=None):
     sql=f'SELECT issue,payload,actual FROM {table} ORDER BY issue DESC'+(' LIMIT :n' if limit else '')
@@ -214,7 +194,7 @@ with st.sidebar:
         except Exception as e:st.error(str(e))
     upload=st.file_uploader('备用 CSV（issue,a,b,c,stamp）',type=['csv'])
     if upload and st.button('导入 CSV'):save(parse(pd.read_csv(upload).to_dict('records')))
-    source=st.radio('统计来源',['历史逐期回测','在线预测']);window=st.selectbox('统计区间',[20,50,100,500,1000,5000,'全部'],index=6)
+    st.caption('仅统计 V7.6 正式在线预测，不回测。');window=st.selectbox('统计区间',[20,50,100,500,1000,5000,'全部'],index=6)
 
 @st.fragment(run_every=5 if auto else None)
 def live():
@@ -236,14 +216,13 @@ def live():
         remain=(dt+pd.Timedelta(seconds=210)-pd.Timestamp.now(tz='UTC')).total_seconds()
         st.caption(f'预计倒计时 {int(remain)//60:02d}:{int(remain)%60:02d}' if 0<remain<=210 else '等待新开奖或检查时间设置')
     except Exception:st.caption('开奖时间无法解析')
-    progress=st.progress(0,text='检查历史回测进度')
-    counts,w=replay(d,progress);progress.empty()
+    counts=fit_counts(d.tail(int(n)));w=np.full((3,4,M),1/M)
     with E.begin() as c:
-        pending=c.execute(text('SELECT issue FROM v750_live WHERE actual IS NULL')).scalars().all()
+        pending=c.execute(text('SELECT issue FROM v760_live WHERE actual IS NULL')).scalars().all()
         for i in pending:
             row=c.execute(text('SELECT a,b,c FROM v720_draws WHERE issue=:i'),dict(i=i)).first()
-            if row:c.execute(text('UPDATE v750_live SET actual=:a WHERE issue=:i AND actual IS NULL'),dict(a=json.dumps(list(row)),i=i))
-    online=load_records('v750_live');settled=[r for r in online if r[2] is not None]
+            if row:c.execute(text('UPDATE v760_live SET actual=:a WHERE issue=:i AND actual IS NULL'),dict(a=json.dumps(list(row)),i=i))
+    online=load_records('v760_live');settled=[r for r in online if r[2] is not None]
     # Live calibration uses completed 50-issue blocks only, independently of historical records.
     if len(settled)>=50:
         loss=np.zeros((3,4,M))
@@ -256,49 +235,42 @@ def live():
             fresh=fetch('/draws/latest');save(fresh)
             remaining=(dt+pd.Timedelta(seconds=210)-pd.Timestamp.now(tz='UTC')).total_seconds()
             if fresh and max(r['issue'] for r in fresh)==issue-1 and 0<remaining<=210:
-                with E.begin() as c:c.execute(text('INSERT INTO v750_live(issue,created,payload) VALUES(:i,:t,:p) ON CONFLICT(issue) DO NOTHING'),dict(i=issue,t=datetime.now(TZ).isoformat(),p=json.dumps(pp)))
+                with E.begin() as c:c.execute(text('INSERT INTO v760_live(issue,created,payload) VALUES(:i,:t,:p) ON CONFLICT(issue) DO NOTHING'),dict(i=issue,t=datetime.now(TZ).isoformat(),p=json.dumps(pp)))
         except Exception as e:st.warning(f'在线记录未锁定：{e}')
-    online=load_records('v750_live');saved=next((p for i,p,y in online if i==issue),None)
+    online=load_records('v760_live');saved=next((p for i,p,y in online if i==issue),None)
     if saved:pp=saved
     st.caption('已锁定在线预测' if saved else '研究预览：尚未锁定在线预测')
-    rec=load_records('v750_back' if source=='历史逐期回测' else 'v750_live',None if window=='全部' else int(window))
+    rec=load_records('v760_live',None if window=='全部' else int(window))
     st.subheader('ABC 三球 · 12项独立综合推演')
-    names=NAMES+['AI综合']
-    for b in range(3):
-        st.header(f'{chr(65+b)}球')
-        cols=st.columns(4)
-        for k,t in enumerate(TASKS):
-            a=pp['picks'][M][b][k];q=np.array(pp['mix'][b][k])
+    st.caption(f'正式已核对 {len(settled)} 期；完成 {len(settled)//50} 轮校准。初始等权重，不使用旧版预测成绩。')
+    for k in [2,3,0,1]:
+        t=TASKS[k];st.header(t+'预测')
+        cols=st.columns(3)
+        summary=[]; distributions=[]; all_runs=[]
+        combined=pd.DataFrame({'期号':[i for i,_,_ in rec]})
+        for b in range(3):
+            ball=chr(65+b);a=pp['picks'][M][b][k];q=np.array(pp['mix'][b][k])
             prob=float(q[a].sum()) if k<2 else float(q[5:].sum() if k==2 else q[1::2].sum())
-            with cols[k]:
-                st.metric(t,label(a,k))
+            with cols[b]:
+                st.metric(ball+'球',label(a,k))
                 st.caption(f'模型覆盖概率 {prob:.1%}' if k<2 else (f'大 {prob:.1%} / 小 {1-prob:.1%}' if k==2 else f'单 {prob:.1%} / 双 {1-prob:.1%}'))
-        summary=[]; distributions=[]
-        for k,t in enumerate(TASKS):
-            df=detail(rec,M,b,k);summary.append([t,*stats(df)])
+            df=detail(rec,M,b,k);summary.append([ball,*stats(df)])
+            combined[ball+'球预测']=df['预测'];combined[ball+'球实际']=df['实际'];combined[ball+'球结果']=df['结果']
             rr=runs(df)
+            for r in rr:all_runs.append(dict(球=ball,**r))
             for status in ['❌','✅']:
                 lengths={}
                 for r in rr:
                     if r['结果']==status:lengths[r['长度']]=lengths.get(r['长度'],0)+1
-                distributions.append([t,status,' / '.join(f'{l}期:{v}次' for l,v in sorted(lengths.items())) or '—'])
-        st.markdown('**综合预测历史成绩**')
-        st.dataframe(pd.DataFrame(summary,columns=['项目','已核对','正确','错误','命中率','最高连胜','最高连错','当前']),hide_index=True)
+                distributions.append([ball,status,' / '.join(f'{l}期:{v}次' for l,v in sorted(lengths.items())) or '0次'])
+        st.dataframe(pd.DataFrame(summary,columns=['球','已核对','正确','错误','命中率','最高连胜','最高连错','当前']),hide_index=True)
+        st.markdown('**逐期正式预测记录**')
+        st.dataframe(combined.iloc[::-1],hide_index=True,height=300)
+        st.download_button('下载'+t+'历史 CSV',combined.to_csv(index=False).encode('utf-8-sig'),file_name=f'v760_{k}.csv',key=f'export_{k}')
         st.markdown('**历史连胜连错次数**')
-        st.dataframe(pd.DataFrame(distributions,columns=['项目','状态','连续长度及次数']),hide_index=True)
-        # All four independent histories appear together, newest first.
-        combined=pd.DataFrame({'期号':[i for i,_,_ in rec]})
-        for k,t in enumerate(TASKS):
-            df=detail(rec,M,b,k)
-            combined[t+'预测']=df['预测'];combined[t+'结果']=df['结果']
-            if k==0:combined['实际号码']=df['实际']
-        st.markdown('**逐期综合预测记录**')
-        st.dataframe(combined.iloc[::-1],hide_index=True,height=320)
-        st.download_button(f'下载{chr(65+b)}球历史 CSV',combined.to_csv(index=False).encode('utf-8-sig'),file_name=f'v751_{chr(65+b)}.csv',key=f'export_{b}')
-    st.subheader('历史连错详细记录')
-    b=st.selectbox('明细球号',range(3),format_func=lambda i:chr(65+i));k=st.selectbox('明细项目',range(4),format_func=lambda i:TASKS[i]);df=detail(rec,M,b,k)
-    rr=pd.DataFrame(runs(df),columns=['结果','开始','结束','长度']);st.dataframe(rr.iloc[::-1],hide_index=True)
-    st.dataframe(df.iloc[::-1],hide_index=True)
+        st.dataframe(pd.DataFrame(distributions,columns=['球','状态','连续长度及次数']),hide_index=True)
+        with st.expander(t+'连胜连错详细期号'):
+            st.dataframe(pd.DataFrame(all_runs,columns=['球','结果','开始','结束','长度']).iloc[::-1],hide_index=True)
     with st.expander('独立数学模型历史成绩（可选查看）'):
         mb=st.selectbox('模型明细球号',range(3),format_func=lambda i:chr(65+i));mk=st.selectbox('模型明细项目',range(4),format_func=lambda i:TASKS[i]);mm=st.selectbox('独立模型',range(M),format_func=lambda i:NAMES[i])
         md=detail(rec,mm,mb,mk)
@@ -311,5 +283,5 @@ def live():
             for k in range(4):
                 for m,name in enumerate(NAMES):rows.append([chr(65+b),TASKS[k],name,pp['w'][b][k][m],*pp['p'][m][b]])
         st.dataframe(pd.DataFrame(rows,columns=['球','项目','模型','权重',*map(str,range(10))]),hide_index=True)
-    st.caption('第一期仅理论基准可用；缺少必要历史的模型不计成绩。历史与在线独立保存。当前统计窗口可能截断连续记录。')
+    st.caption('历史开奖仅用于估计概率，不生成历史预测。正式预测从零累计；当前统计窗口可能截断连续记录。')
 live()
