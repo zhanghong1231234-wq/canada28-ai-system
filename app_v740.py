@@ -1,4 +1,4 @@
-import os, json, math
+import os, json, math, time
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 
 st.set_page_config(page_title='Canada28 Matrix AI V7.4',layout='wide')
 st.title('Canada28 Matrix AI V7.4')
-st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。')
+st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。数据来自 [pc28.world](https://pc28.world)。')
 TZ=timezone(timedelta(hours=8)); BASE='https://pc28.world/api/v1'
 URL=os.getenv('DATABASE_URL','')
 try: URL=st.secrets.get('DATABASE_URL',URL)
@@ -24,7 +24,7 @@ E=db(URL)
 
 def parse(raw):
     if isinstance(raw,dict):
-        for k in ('data','draws','results','items','records','list'):
+        for k in ('data','draw','draws','results','items','records','list'):
             if k in raw:return parse(raw[k])
         raw=[raw]
     out=[]
@@ -50,12 +50,18 @@ def fetch(path,params=None):
     r=requests.get(BASE+path,params=params,timeout=15);r.raise_for_status();return parse(r.json())
 
 def sync(n):
-    seen=set()
-    for page in range(1, min(100,math.ceil(n/100)+2)+1):
-        rows=fetch('/draws',{'limit':100,'page':page}); new=[r for r in rows if r['issue'] not in seen]
-        if not new:break
+    seen=set(); before=None
+    while len(seen)<n:
+        params={'limit':min(200,n-len(seen))}
+        if before is not None:params['before']=before
+        rows=fetch('/draws',params)
+        new=[r for r in rows if r['issue'] not in seen and (before is None or r['issue']<before)]
+        if not new:
+            if len(seen)<n:raise RuntimeError(f'历史同步仅取得 {len(seen)} / {n} 期，接口未返回更多有效记录。已保存已取得数据。')
+            break
         save(new);seen.update(r['issue'] for r in new)
-        if len(seen)>=n:break
+        before=min(r['issue'] for r in new)
+        if len(seen)<n:time.sleep(1.1)
     return len(seen)
 
 def history():
