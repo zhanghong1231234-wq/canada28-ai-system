@@ -6,7 +6,7 @@ import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-st.set_page_config(page_title='Canada28 Matrix AI V7.7',layout='wide')
+st.set_page_config(page_title='Canada28 Matrix AI V7.8',layout='wide')
 st.title('Canada28 Matrix AI V7.7')
 st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。数据来自 [pc28.world](https://pc28.world)。')
 TZ=timezone(timedelta(hours=8)); BASE='https://pc28.world/api/v1'
@@ -229,14 +229,20 @@ def live():
         for _,pp,y in settled[:len(settled)//50*50]:update_loss(loss,pp,y)
         w=weights(loss)
     p,av,f=model_probs(x,counts,issues);pp=pack(p,av,w)
-    # Recheck clock and latest draw after computation; never intentionally lock a past target.
-    if auto and remain is not None:
+    # V7.8: lock once per target issue whenever the worker is running.
+    # Do not make prediction creation depend on parsing the source timestamp or a 210s countdown window.
+    if auto:
         try:
-            fresh=fetch('/draws/latest');save(fresh)
-            remaining=(dt+pd.Timedelta(seconds=210)-pd.Timestamp.now(tz='UTC')).total_seconds()
-            if fresh and max(r['issue'] for r in fresh)==issue-1 and 0<remaining<=210:
-                with E.begin() as c:c.execute(text('INSERT INTO v760_live(issue,created,payload) VALUES(:i,:t,:p) ON CONFLICT(issue) DO NOTHING'),dict(i=issue,t=datetime.now(TZ).isoformat(),p=json.dumps(pp)))
-        except Exception as e:st.warning(f'在线记录未锁定：{e}')
+            fresh=fetch('/draws/latest')
+            save(fresh)
+            if fresh and max(r['issue'] for r in fresh)==issue-1:
+                with E.begin() as c:
+                    c.execute(
+                        text('INSERT INTO v760_live(issue,created,payload) VALUES(:i,:t,:p) ON CONFLICT(issue) DO NOTHING'),
+                        dict(i=issue,t=datetime.now(TZ).isoformat(),p=json.dumps(pp))
+                    )
+        except Exception as e:
+            st.warning(f'在线预测锁定未完成：{e}')
     online=load_records('v760_live');saved=next((p for i,p,y in online if i==issue),None)
     if saved:pp=saved
     st.caption('已锁定在线预测' if saved else '研究预览：尚未锁定在线预测')
