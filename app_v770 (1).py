@@ -6,8 +6,8 @@ import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-st.set_page_config(page_title='Canada28 Matrix AI V7.7',layout='wide')
-st.title('Canada28 Matrix AI V7.7')
+st.set_page_config(page_title='Canada28 Matrix AI V7.8.1',layout='wide')
+st.title('Canada28 Matrix AI V7.8.1')
 st.caption('统计研究：随机开奖不能可靠预测；候选覆盖率不等于盈利概率。数据来自 [pc28.world](https://pc28.world)。')
 TZ=timezone(timedelta(hours=8)); BASE='https://pc28.world/api/v1'
 URL=os.getenv('DATABASE_URL','')
@@ -329,6 +329,52 @@ def live():
     else:
         st.warning('监控尚未启动。你可以自行开启开关并设置开始时间。')
     st.caption('此开关只控制网页内的预测监控与排名展示；Streamlit 页面关闭或休眠时不会在后台运行，也不会提交真实投注订单。');
+
+
+    st.header('顺达平台数据核对（手动快照 / 只读）')
+    st.caption('仅粘贴网页 Response JSON，不输入登录凭证。每次提交自动与当前 AI 数据比较；不主动请求顺达，不提交订单。')
+    with st.form('platform_check_v781'):
+        raw_current=st.text_area('GetCurrentInstall 响应 JSON')
+        raw_odds=st.text_area('Loaddata 响应 JSON')
+        captured=st.text_input('快照采集时间（北京时间 YYYY-MM-DD HH:MM:SS）',value='',placeholder='2026-11-16 17:48:00')
+        submitted=st.form_submit_button('核对并保存')
+    if submitted:
+        try:
+            a=json.loads(raw_current); o=json.loads(raw_odds)
+            if not isinstance(a,dict) or not isinstance(o,dict):raise ValueError('需要 JSON 对象')
+            target=int(a['Installments']); prev=int(a['PreInstallments'])
+            nums=[int(v) for v in a['PreLotteryResult'].split(',')]
+            if len(nums)!=3 or any(v<0 or v>9 for v in nums):raise ValueError('开奖号码无效')
+            close=int(a['CloseTimeStamp']); opening=int(a['OpenTimeStamp'])
+            if not 0<=close<=opening<=210:raise ValueError('倒计时超出预期范围')
+            stamp=datetime.strptime(captured.strip(),'%Y-%m-%d %H:%M:%S').replace(tzinfo=TZ)
+            now=datetime.now(TZ); age=(now-stamp).total_seconds()
+            odds={f'B{b}QH{v}':float(o['data'][f'B{b}QH{v}']) for b in range(1,4) for v in range(10)}
+            if any(not math.isfinite(v) or v<=1 for v in odds.values()):raise ValueError('赔率无效')
+            checks={'期号一致':target==issue,'上期期号一致':prev==int(last.issue),'三球一致':nums==x[-1].tolist(),'快照新鲜':0<=age<=30,'封盘倒计时有效':close-age>0,'赔率与参考值一致':all(abs(v-9.677)<1e-8 for v in odds.values()),'响应状态正常':a.get('State')==1 and o.get('State')==1}
+            record={'AI目标':issue,'平台目标':target,'平台上期':prev,'平台号码':nums,'AI号码':x[-1].tolist(),'采集时间':stamp.isoformat(),'核对时间':now.isoformat(),'采集时封盘秒数':close,'采集时开奖秒数':opening,'赔率':odds,'检查':checks,'通过':all(checks.values())}
+            with E.begin() as c:
+                c.execute(text('CREATE TABLE IF NOT EXISTS v781_platform_checks (issue BIGINT NOT NULL, captured TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(issue,captured))'))
+                c.execute(text('INSERT INTO v781_platform_checks(issue,captured,payload) VALUES(:i,:t,:p) ON CONFLICT(issue,captured) DO NOTHING'),dict(i=target,t=stamp.isoformat(),p=json.dumps(record,ensure_ascii=False)))
+            st.session_state['v781_last_check']=record
+        except Exception:
+            st.error('核对失败：请检查两个 JSON、字段、赔率及北京时间格式。未保存无效数据。')
+    result=st.session_state.get('v781_last_check')
+    if result:
+        st.write(f"上次核对：{result['核对时间']}｜平台目标 {result['平台目标']}｜AI目标 {result['AI目标']}")
+        st.dataframe(pd.DataFrame([{'项目':k,'结果':'一致 / 通过' if v else '异常'} for k,v in result['检查'].items()]),hide_index=True)
+        age_now=(datetime.now(TZ)-datetime.fromisoformat(result['采集时间'])).total_seconds()
+        if result['通过'] and result['平台目标']==issue and 0<=age_now<=30 and result['采集时封盘秒数']>age_now:
+            st.success('当前快照核对通过（仅统计）')
+        else:
+            st.warning('快照异常、过期或期号已变化；请重新采集核对。')
+    with st.expander('平台核对历史（最近100条）'):
+        try:
+            with E.begin() as c:
+                c.execute(text('CREATE TABLE IF NOT EXISTS v781_platform_checks (issue BIGINT NOT NULL, captured TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(issue,captured))'))
+                rows=c.execute(text('SELECT payload FROM v781_platform_checks ORDER BY captured DESC LIMIT 100')).scalars().all()
+            st.dataframe(pd.DataFrame([{'平台期号':p['平台目标'],'AI期号':p['AI目标'],'采集时间':p['采集时间'],'核对时间':p['核对时间'],'结果':'通过' if p['通过'] else '异常'} for p in map(json.loads,rows)]),hide_index=True)
+        except Exception:st.warning('核对历史暂不可用')
 
     st.header('八码专项表现分析（仅统计，不自动投注）')
     eight_rows=[]
