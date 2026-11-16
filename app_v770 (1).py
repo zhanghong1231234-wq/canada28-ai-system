@@ -317,6 +317,19 @@ def live():
     st.subheader('手动追倍参数（仅记录设置，不自动下注）')
     multiplier=st.selectbox('你手动选择当前倍数',[1,2,3,4,5,6,8,10],index=0,key='v78_manual_multiplier')
     st.info(f'当前手动倍数设置：{multiplier} 倍。此设置仅用于显示/记录，不会提交投注订单或自动加注。')
+    st.subheader('机器人监控启动设置（不提交真实订单）')
+    monitor_enabled=st.checkbox('手动启动 ABC 八码监控',value=False,key='v78_monitor_enabled')
+    start_clock=st.time_input('计划开始时间（北京时间）',value=datetime.now(TZ).time().replace(second=0,microsecond=0),key='v78_start_clock')
+    now_local=datetime.now(TZ)
+    scheduled=datetime.combine(now_local.date(),start_clock).replace(tzinfo=TZ)
+    if monitor_enabled and now_local>=scheduled:
+        st.success('监控开关已开启且已到设定时间：页面运行期间可持续刷新并更新 ABC 八码排名。')
+    elif monitor_enabled:
+        st.info(f'监控开关已开启，计划于北京时间 {start_clock:%H:%M} 开始；请保持网页运行。')
+    else:
+        st.warning('监控尚未启动。你可以自行开启开关并设置开始时间。')
+    st.caption('此开关只控制网页内的预测监控与排名展示；Streamlit 页面关闭或休眠时不会在后台运行，也不会提交真实投注订单。');
+
     st.header('八码专项表现分析（仅统计，不自动投注）')
     eight_rows=[]
     for b in range(3):
