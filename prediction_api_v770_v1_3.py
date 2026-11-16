@@ -4,7 +4,7 @@ Run separately from Streamlit. No betting or order-submission routes.
 import os, json, hmac
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from sqlalchemy import create_engine, text
 
 URL = os.environ.get("DATABASE_URL", "")
@@ -17,6 +17,11 @@ URL = URL.replace("postgresql://", "postgresql+psycopg://", 1)
 engine = create_engine(URL, pool_pre_ping=True)
 app = FastAPI(title="Canada28 V7.7 Read-only Prediction API")
 TASKS = ["seven", "eight", "size", "parity"]
+
+
+def require_api_key(authorization: str):
+    if not hmac.compare_digest(authorization, "Bearer " + KEY):
+        raise HTTPException(401, "Unauthorized")
 
 
 def summarize(payload, records):
@@ -59,10 +64,40 @@ def health():
     return {"ok": True, "system": "Canada28 V7.7", "mode": "read-only"}
 
 
+@app.get("/v1/draws")
+def draw_history(
+    from_issue: int = Query(..., ge=1),
+    to_issue: int = Query(..., ge=1),
+    authorization: str = Header(default="")
+):
+    """Return stored, verified draw rows for the local monitor's gap recovery."""
+    require_api_key(authorization)
+    if to_issue < from_issue:
+        raise HTTPException(400, "to_issue must be greater than or equal to from_issue")
+    if to_issue - from_issue > 499:
+        raise HTTPException(400, "A single request may cover at most 500 issue numbers")
+
+    with engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT issue,a,b,c FROM v720_draws "
+            "WHERE issue BETWEEN :lo AND :hi ORDER BY issue"
+        ), {"lo": from_issue, "hi": to_issue}).all()
+
+    draws = [
+        {"issue": int(r[0]), "a": int(r[1]), "b": int(r[2]), "c": int(r[3])}
+        for r in rows
+    ]
+    return {
+        "from_issue": from_issue,
+        "to_issue": to_issue,
+        "count": len(draws),
+        "draws": draws
+    }
+
+
 @app.get("/v1/predictions/latest")
 def latest(authorization: str = Header(default="")):
-    if not hmac.compare_digest(authorization, "Bearer " + KEY):
-        raise HTTPException(401, "Unauthorized")
+    require_api_key(authorization)
     with engine.connect() as c:
         draw = c.execute(text(
             "SELECT issue,stamp,a,b,c FROM v720_draws ORDER BY issue DESC LIMIT 1"
