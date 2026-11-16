@@ -40,4 +40,12 @@ def latest(authorization: str = Header(default='')):
         expires=dt+timedelta(seconds=210)
         if not 0<(expires-datetime.now(timezone.utc)).total_seconds()<=210: raise ValueError()
     except (ValueError,TypeError): raise HTTPException(503,'Draw timestamp stale or invalid')
-    return dict(issue=target,source_issue=int(draw[0]),created=row[0],estimated_draw_at=expires.isoformat(),locked=True, tasks=summarize(json.loads(row[1]),[(json.loads(p),json.loads(y)) for p,y in records]))
+    payload=json.loads(row[1])
+    balls={
+        ball:{
+            'eight_numbers':list(payload['picks'][-1][b][1]),
+            'number_probabilities':[float(v) for v in payload['mix'][b][1]]
+        }
+        for b,ball in enumerate(('A','B','C'))
+    }
+    return dict(issue=target,source_issue=int(draw[0]),created=row[0],estimated_draw_at=expires.isoformat(),locked=True,balls=balls,tasks=summarize(payload,[(json.loads(p),json.loads(y)) for p,y in records]))
