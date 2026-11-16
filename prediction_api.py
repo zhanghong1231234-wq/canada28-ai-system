@@ -37,9 +37,10 @@ def latest(authorization: str = Header(default='')):
     try:
         dt=datetime.fromisoformat(str(draw[1]).replace('Z','+00:00'))
         if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        # Informational estimated time only. Prediction validity is determined by
+        # current source_issue + 1 and the existence of an unsettled locked row.
         expires=dt+timedelta(seconds=210)
-        if not 0<(expires-datetime.now(timezone.utc)).total_seconds()<=210: raise ValueError()
-    except (ValueError,TypeError): raise HTTPException(503,'Draw timestamp stale or invalid')
+    except (ValueError,TypeError): raise HTTPException(503,'Invalid draw timestamp')
     payload=json.loads(row[1])
     balls={
         ball:{
