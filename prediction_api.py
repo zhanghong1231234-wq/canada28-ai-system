@@ -48,4 +48,4 @@ def latest(authorization: str = Header(default='')):
         }
         for b,ball in enumerate(('A','B','C'))
     }
-    return dict(issue=target,source_issue=int(draw[0]),created=row[0],estimated_draw_at=expires.isoformat(),locked=True,balls=balls,tasks=summarize(payload,[(json.loads(p),json.loads(y)) for p,y in records]))
+    return dict(system='Canada28 Matrix AI V7.8',issue=target,source_issue=int(draw[0]),created=row[0],estimated_draw_at=expires.isoformat(),locked=True,balls=balls,tasks=summarize(payload,[(json.loads(p),json.loads(y)) for p,y in records]))
