@@ -148,9 +148,17 @@ def latest(authorization: str = Header(default="")):
     except (ValueError, TypeError):
         estimated = None
 
+    payload = json.loads(row[1])
+    balls = {
+        ball: {
+            "eight_numbers": list(payload["picks"][-1][b][1]),
+            "number_probabilities": [float(v) for v in payload["mix"][b][1]]
+        }
+        for b, ball in enumerate(("A", "B", "C"))
+    }
     return {
         "system": "Canada28 Matrix AI V7.8", "status": "locked",
         "issue": target, "source_issue": int(draw[0]), "created": row[0],
         "estimated_draw_at": estimated, "locked": True,
-        "latest_draw": latest_draw, "tasks": tasks
+        "latest_draw": latest_draw, "balls": balls, "tasks": tasks
     }
