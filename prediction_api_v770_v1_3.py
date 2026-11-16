@@ -6,7 +6,8 @@ import json
 import hmac
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import create_engine, text
 
 URL = os.environ.get("DATABASE_URL", "").strip()
@@ -19,10 +20,11 @@ URL = URL.replace("postgresql://", "postgresql+psycopg://", 1)
 engine = create_engine(URL, pool_pre_ping=True, pool_recycle=300)
 app = FastAPI(title="Canada28 V7.8 Simulation API", version="7.8")
 TASKS = ["seven", "eight", "size", "parity"]
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def require_api_key(authorization: str):
-    if not hmac.compare_digest(authorization.strip(), "Bearer " + KEY):
+def require_api_key(credentials: HTTPAuthorizationCredentials):
+    if credentials is None or credentials.scheme.lower() != "bearer" or not hmac.compare_digest(credentials.credentials.strip(), KEY):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -73,10 +75,10 @@ def health():
 def draw_history(
     from_issue: int = Query(..., ge=1),
     to_issue: int = Query(..., ge=1),
-    authorization: str = Header(default="")
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
 ):
     """Stored draw results for local gap recovery; maximum span is 500 issue numbers."""
-    require_api_key(authorization)
+    require_api_key(credentials)
     if to_issue < from_issue:
         raise HTTPException(400, "to_issue must be greater than or equal to from_issue")
     if to_issue - from_issue > 499:
@@ -97,8 +99,8 @@ def draw_history(
 
 
 @app.get("/v1/predictions/latest")
-def latest(authorization: str = Header(default="")):
-    require_api_key(authorization)
+def latest(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    require_api_key(credentials)
     try:
         with engine.connect() as c:
             draw = c.execute(text(
