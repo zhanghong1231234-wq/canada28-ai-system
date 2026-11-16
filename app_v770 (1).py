@@ -280,6 +280,43 @@ def live():
         st.dataframe(pd.DataFrame(distributions,columns=['球','状态','连续长度及次数']),hide_index=True)
         with st.expander(t+'连胜连错详细期号'):
             st.dataframe(pd.DataFrame(all_runs,columns=['球','结果','开始','结束','长度']).iloc[::-1],hide_index=True)
+    st.header('ABC 三球八码自动筛选（统计辅助）')
+    selector_rows=[]
+    selector_detail={}
+    for b in range(3):
+        dd=detail(online,M,b,1)
+        settled_b=dd[dd['结果'].isin(['✅','❌'])].copy()
+        streaks=runs(dd)
+        current_miss=0
+        if len(settled_b) and streaks and streaks[-1]['结果']=='❌' and streaks[-1]['结束']==settled_b.iloc[-1]['期号']:
+            current_miss=streaks[-1]['长度']
+        longest_miss=max([z['长度'] for z in streaks if z['结果']=='❌'] or [0])
+        rates={}
+        samples={}
+        for win in (50,100,200):
+            sample=settled_b.tail(win)
+            samples[win]=len(sample)
+            rates[win]=float((sample['结果']=='✅').mean()) if len(sample) else None
+        # Weighted recent/medium/long-term score; only available windows contribute.
+        weights_by_window={50:0.5,100:0.3,200:0.2}
+        usable=[w for w in (50,100,200) if rates[w] is not None]
+        score=(sum(rates[w]*weights_by_window[w] for w in usable)/sum(weights_by_window[w] for w in usable)) if usable else None
+        selector_rows.append({'球':chr(65+b),'已核对':len(settled_b),'近50期':rates[50],'近100期':rates[100],'近200期':rates[200],'当前连错':current_miss,'历史最长连错':longest_miss,'综合参考分':score})
+        selector_detail[chr(65+b)]=dd
+    selector_df=pd.DataFrame(selector_rows)
+    eligible=selector_df[selector_df['已核对']>=30].copy()
+    if len(eligible):
+        eligible=eligible.sort_values(['综合参考分','当前连错','历史最长连错'],ascending=[False,True,True],kind='stable')
+        selected_ball=str(eligible.iloc[0]['球'])
+        st.success(f'当前统计筛选首位：{selected_ball} 球｜综合参考分 {eligible.iloc[0]["综合参考分"]:.1%}')
+    else:
+        selected_ball=None
+        st.warning('A/B/C 每球至少需要30期已核对八码记录，当前样本不足，暂不筛选。')
+    st.dataframe(selector_df,hide_index=True,column_config={k:st.column_config.NumberColumn(format='percent') for k in ['近50期','近100期','近200期','综合参考分']})
+    st.caption('综合参考分按近50/100/200期命中率加权（50%/30%/20%）；同分时优先当前连错较少者，再比较历史最长连错。仅为历史统计排序，不代表未来胜率。')
+    st.subheader('手动追倍参数（仅记录设置，不自动下注）')
+    multiplier=st.selectbox('你手动选择当前倍数',[1,2,3,4,5,6,8,10],index=0,key='v78_manual_multiplier')
+    st.info(f'当前手动倍数设置：{multiplier} 倍。此设置仅用于显示/记录，不会提交投注订单或自动加注。')
     st.header('八码专项表现分析（仅统计，不自动投注）')
     eight_rows=[]
     for b in range(3):
