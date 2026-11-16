@@ -280,6 +280,30 @@ def live():
         st.dataframe(pd.DataFrame(distributions,columns=['球','状态','连续长度及次数']),hide_index=True)
         with st.expander(t+'连胜连错详细期号'):
             st.dataframe(pd.DataFrame(all_runs,columns=['球','结果','开始','结束','长度']).iloc[::-1],hide_index=True)
+    st.header('八码专项表现分析（仅统计，不自动投注）')
+    eight_rows=[]
+    for b in range(3):
+        dd=detail(online,M,b,1)
+        settled8=dd[dd['结果'].isin(['✅','❌'])]
+        row={'球':chr(65+b),'已核对':len(settled8)}
+        for win in (50,100,200):
+            sample=settled8.tail(win)
+            row[f'近{win}期样本']=len(sample)
+            row[f'近{win}期命中率']=float((sample['结果']=='✅').mean()) if len(sample) else None
+        streak_list=runs(dd)
+        row['当前连错']=0
+        if streak_list and streak_list[-1]['结束']==(int(settled8.iloc[-1]['期号']) if len(settled8) else None) and streak_list[-1]['结果']=='❌':
+            row['当前连错']=streak_list[-1]['长度']
+        row['历史最长连错']=max([z['长度'] for z in streak_list if z['结果']=='❌'] or [0])
+        eight_rows.append(row)
+    eight_df=pd.DataFrame(eight_rows)
+    st.dataframe(eight_df,hide_index=True,column_config={f'近{w}期命中率':st.column_config.NumberColumn(format='percent') for w in (50,100,200)})
+    st.caption('排名只反映已核对历史记录；八码覆盖率受覆盖数字数量影响，历史成绩不能保证下一期表现。此面板不生成或提交投注订单。')
+    with st.expander('八码近期表现排名'):
+        for win in (50,100,200):
+            rank=eight_df.sort_values(f'近{win}期命中率',ascending=False,na_position='last')
+            st.markdown(f'**近{win}期命中率排名**')
+            st.dataframe(rank[['球',f'近{win}期样本',f'近{win}期命中率','当前连错','历史最长连错']],hide_index=True,column_config={f'近{win}期命中率':st.column_config.NumberColumn(format='percent')})
     with st.expander('独立数学模型历史成绩（可选查看）'):
         mb=st.selectbox('模型明细球号',range(3),format_func=lambda i:chr(65+i));mk=st.selectbox('模型明细项目',range(4),format_func=lambda i:TASKS[i]);mm=st.selectbox('独立模型',range(M),format_func=lambda i:NAMES[i])
         md=detail(rec,mm,mb,mk)
