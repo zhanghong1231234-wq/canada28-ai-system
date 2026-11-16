@@ -1,145 +1,156 @@
-"""Read-only API for Canada28 Matrix AI V7.7 locked predictions.
-Run separately from Streamlit. No betting or order-submission routes.
+"""Canada28 V7.8 read-only API for the local simulation monitor.
+Prediction generation and settlement remain in the Streamlit worker.
 """
-import os, json, hmac
+import os
+import json
+import hmac
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from sqlalchemy import create_engine, text
 
-URL = os.environ.get("DATABASE_URL", "")
-KEY = os.environ.get("PREDICTION_API_KEY", "")
+URL = os.environ.get("DATABASE_URL", "").strip()
+KEY = os.environ.get("PREDICTION_API_KEY", "").strip()
 if not URL or not KEY:
-    raise RuntimeError("DATABASE_URL and PREDICTION_API_KEY required")
+    raise RuntimeError("DATABASE_URL and PREDICTION_API_KEY are required")
 
 URL = URL.replace("postgres://", "postgresql+psycopg://", 1)
 URL = URL.replace("postgresql://", "postgresql+psycopg://", 1)
-engine = create_engine(URL, pool_pre_ping=True)
-app = FastAPI(title="Canada28 V7.7 Read-only Prediction API")
+engine = create_engine(URL, pool_pre_ping=True, pool_recycle=300)
+app = FastAPI(title="Canada28 V7.8 Simulation API", version="7.8")
 TASKS = ["seven", "eight", "size", "parity"]
 
 
 def require_api_key(authorization: str):
-    if not hmac.compare_digest(authorization, "Bearer " + KEY):
-        raise HTTPException(401, "Unauthorized")
+    if not hmac.compare_digest(authorization.strip(), "Bearer " + KEY):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def summarize(payload, records):
-    result = []
     picks = payload.get("picks") or []
     mix = payload.get("mix") or []
     if len(picks) < 1 or len(mix) != 3:
-        raise HTTPException(503, "Locked prediction payload is incomplete")
+        raise ValueError("prediction payload incomplete")
+    result = []
     for b in range(3):
         for k, task in enumerate(TASKS):
-            try:
-                pick = picks[-1][b][k]
-                q = mix[b][k]
-                prob = sum(q[d] for d in pick) if k < 2 else sum(
-                    q[d] for d in range(10)
-                    if (int(d >= 5) if k == 2 else d % 2) == pick
-                )
-            except (IndexError, TypeError, KeyError):
-                raise HTTPException(503, "Prediction task data is incomplete")
-            hits = n = 0
-            for p, y in records:
+            pick = picks[-1][b][k]
+            q = mix[b][k]
+            prob = sum(float(q[d]) for d in pick) if k < 2 else sum(
+                float(q[d]) for d in range(10)
+                if (int(d >= 5) if k == 2 else d % 2) == int(pick)
+            )
+            hits = settled = 0
+            for old_payload, actual in records:
                 try:
-                    a = p["picks"][-1][b][k]
-                    v = y[b]
-                except (IndexError, TypeError, KeyError):
+                    old_pick = json.loads(old_payload)["picks"][-1][b][k]
+                    value = json.loads(actual)[b]
+                    settled += 1
+                    hits += int(value in old_pick if k < 2 else int(old_pick) == (int(value >= 5) if k == 2 else value % 2))
+                except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                n += 1
-                hits += int(v in a if k < 2 else a == (int(v >= 5) if k == 2 else v % 2))
             result.append({
                 "ball": "ABC"[b], "task": task, "pick": pick,
-                "model_probability": float(prob), "settled": n,
-                "correct": hits, "incorrect": n - hits,
-                "hit_rate": hits / n if n else None
+                "model_probability": float(prob), "settled": settled,
+                "correct": hits, "incorrect": settled - hits,
+                "hit_rate": hits / settled if settled else None
             })
     return result
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "system": "Canada28 V7.7", "mode": "read-only"}
+    try:
+        with engine.connect() as c:
+            c.execute(text("SELECT 1"))
+        return {"ok": True, "system": "Canada28 V7.8", "database": "connected", "mode": "simulation-read-only"}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {type(exc).__name__}")
 
 
 @app.get("/v1/draws")
+@app.get("/v1/draws/")
 def draw_history(
     from_issue: int = Query(..., ge=1),
     to_issue: int = Query(..., ge=1),
     authorization: str = Header(default="")
 ):
-    """Return stored, verified draw rows for the local monitor's gap recovery."""
+    """Stored draw results for local gap recovery; maximum span is 500 issue numbers."""
     require_api_key(authorization)
     if to_issue < from_issue:
         raise HTTPException(400, "to_issue must be greater than or equal to from_issue")
     if to_issue - from_issue > 499:
         raise HTTPException(400, "A single request may cover at most 500 issue numbers")
-
-    with engine.connect() as c:
-        rows = c.execute(text(
-            "SELECT issue,a,b,c FROM v720_draws "
-            "WHERE issue BETWEEN :lo AND :hi ORDER BY issue"
-        ), {"lo": from_issue, "hi": to_issue}).all()
-
-    draws = [
-        {"issue": int(r[0]), "a": int(r[1]), "b": int(r[2]), "c": int(r[3])}
-        for r in rows
-    ]
-    return {
-        "from_issue": from_issue,
-        "to_issue": to_issue,
-        "count": len(draws),
-        "draws": draws
-    }
+    try:
+        with engine.connect() as c:
+            rows = c.execute(text(
+                "SELECT issue,a,b,c,stamp FROM v720_draws "
+                "WHERE issue BETWEEN :lo AND :hi ORDER BY issue"
+            ), {"lo": from_issue, "hi": to_issue}).all()
+        draws = [
+            {"issue": int(r[0]), "a": int(r[1]), "b": int(r[2]), "c": int(r[3]), "stamp": r[4]}
+            for r in rows
+        ]
+        return {"from_issue": from_issue, "to_issue": to_issue, "count": len(draws), "draws": draws}
+    except Exception as exc:
+        raise HTTPException(503, detail=f"draw query unavailable: {type(exc).__name__}")
 
 
 @app.get("/v1/predictions/latest")
 def latest(authorization: str = Header(default="")):
     require_api_key(authorization)
-    with engine.connect() as c:
-        draw = c.execute(text(
-            "SELECT issue,stamp,a,b,c FROM v720_draws ORDER BY issue DESC LIMIT 1"
-        )).first()
-        if not draw:
-            raise HTTPException(503, "No draw data")
-        target = int(draw[0]) + 1
-        row = c.execute(text(
-            "SELECT created,payload FROM v760_live "
-            "WHERE issue=:i AND actual IS NULL"
-        ), {"i": target}).first()
-        if not row:
-            raise HTTPException(503, "No locked prediction for next issue")
-        records = c.execute(text(
-            "SELECT payload,actual FROM v760_live "
-            "WHERE actual IS NOT NULL AND issue<:i ORDER BY issue"
-        ), {"i": target}).all()
+    try:
+        with engine.connect() as c:
+            draw = c.execute(text(
+                "SELECT issue,stamp,a,b,c FROM v720_draws ORDER BY issue DESC LIMIT 1"
+            )).first()
+            if not draw:
+                return {"system": "Canada28 Matrix AI V7.8", "status": "no_draw_data",
+                        "locked": False, "tasks": []}
+            target = int(draw[0]) + 1
+            row = c.execute(text(
+                "SELECT created,payload FROM v760_live WHERE issue=:i AND actual IS NULL"
+            ), {"i": target}).first()
+            records = c.execute(text(
+                "SELECT payload,actual FROM v760_live "
+                "WHERE actual IS NOT NULL AND issue<:i ORDER BY issue"
+            ), {"i": target}).all()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"database query unavailable: {type(exc).__name__}")
+
+    latest_draw = {
+        "issue": int(draw[0]), "stamp": str(draw[1] or ""),
+        "a": int(draw[2]), "b": int(draw[3]), "c": int(draw[4])
+    }
+    if not row:
+        return {
+            "system": "Canada28 Matrix AI V7.8", "status": "prediction_pending",
+            "issue": target, "source_issue": int(draw[0]), "locked": False,
+            "latest_draw": latest_draw, "tasks": [],
+            "message": "The prediction worker has not locked this issue yet. Keep automatic sync enabled."
+        }
+
+    try:
+        tasks = summarize(json.loads(row[1]), records)
+    except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError):
+        return {
+            "system": "Canada28 Matrix AI V7.8", "status": "prediction_payload_invalid",
+            "issue": target, "source_issue": int(draw[0]), "created": row[0],
+            "locked": False, "latest_draw": latest_draw, "tasks": [],
+            "message": "Stored prediction data is incomplete; regenerate it in the prediction worker."
+        }
 
     try:
         dt = datetime.fromisoformat(str(draw[1]).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
-        expires = dt + timedelta(seconds=210)
-        seconds_left = (expires - datetime.now(timezone.utc)).total_seconds()
-        if not 0 < seconds_left <= 210:
-            raise ValueError()
+        estimated = (dt + timedelta(seconds=210)).isoformat()
     except (ValueError, TypeError):
-        raise HTTPException(503, "Draw timestamp stale or invalid")
+        estimated = None
 
     return {
-        "system": "Canada28 Matrix AI V7.7",
-        "issue": target,
-        "source_issue": int(draw[0]),
-        "created": row[0],
-        "estimated_draw_at": expires.isoformat(),
-        "locked": True,
-        "latest_draw": {
-            "issue": int(draw[0]), "stamp": str(draw[1]),
-            "a": int(draw[2]), "b": int(draw[3]), "c": int(draw[4])
-        },
-        "tasks": summarize(
-            json.loads(row[1]),
-            [(json.loads(p), json.loads(y)) for p, y in records]
-        )
+        "system": "Canada28 Matrix AI V7.8", "status": "locked",
+        "issue": target, "source_issue": int(draw[0]), "created": row[0],
+        "estimated_draw_at": estimated, "locked": True,
+        "latest_draw": latest_draw, "tasks": tasks
     }
